@@ -12,12 +12,23 @@ import (
 	"github.com/Abdullah0297445/userland/internal/manifest"
 )
 
+const (
+	Anchor    = "userland-environment"
+	MergeLine = "<<: *" + Anchor
+)
+
+var Owned = []string{"container_name", "restart", "depends_on", "networks", "labels", "ports", "mem_limit"}
+
 type Input struct {
 	Manifest   *manifest.Manifest
 	On         []string
 	Visibility string
 	Env        *env.File
 	Root       string
+}
+
+type Templates struct {
+	set *template.Template
 }
 
 type data struct {
@@ -28,9 +39,49 @@ type data struct {
 	HTTP       *manifest.HTTP
 }
 
-func Render(in Input) ([]byte, error) {
+func Load(root string) (*Templates, error) {
 	funcs := template.FuncMap{"ref": func(v string) string { return "${" + v + "}" }}
-	tmpl, err := template.New("").Funcs(funcs).ParseGlob(filepath.Join(in.Root, "compose", "*.yml"))
+	set, err := template.New("").Funcs(funcs).ParseGlob(filepath.Join(root, "compose", "*.yml"))
+	if err != nil {
+		return nil, err
+	}
+	return &Templates{set: set}, nil
+}
+
+func (t *Templates) Names() []string {
+	var names []string
+	for _, tmpl := range t.set.Templates() {
+		if name := tmpl.Name(); name != "" && !strings.HasSuffix(name, ".yml") {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	return names
+}
+
+func (t *Templates) Has(name string) bool {
+	return t.set.Lookup(name) != nil
+}
+
+func (t *Templates) Body(c *manifest.Container, visibility string) (string, error) {
+	if !t.Has(c.Name) {
+		return "", fmt.Errorf("compose/%s.yml defines no template %q", c.Product, c.Name)
+	}
+	var body bytes.Buffer
+	if err := t.set.ExecuteTemplate(&body, c.Name, data{c.Name, c.Product, visibility, c.Tenant, c.HTTP}); err != nil {
+		return "", err
+	}
+	var lines []string
+	for _, l := range strings.Split(strings.Trim(body.String(), "\n"), "\n") {
+		if strings.TrimSpace(l) != "" {
+			lines = append(lines, l)
+		}
+	}
+	return strings.Join(lines, "\n"), nil
+}
+
+func Render(in Input) ([]byte, error) {
+	templates, err := Load(in.Root)
 	if err != nil {
 		return nil, err
 	}
@@ -39,15 +90,16 @@ func Render(in Input) ([]byte, error) {
 		on[name] = true
 	}
 	var b strings.Builder
-	b.WriteString("name: userland\n\nx-userland-environment: &userland-environment\n  TZ: UTC\n\nservices:\n")
+	fmt.Fprintf(&b, "name: userland\n\nx-%s: &%s\n  TZ: UTC\n\nservices:\n", Anchor, Anchor)
 	networks := map[string]bool{}
 	volumes := map[string]bool{}
 	for _, c := range in.Manifest.All() {
 		if !on[c.Name] {
 			continue
 		}
-		if tmpl.Lookup(c.Name) == nil {
-			return nil, fmt.Errorf("compose/%s.yml defines no template %q", c.Product, c.Name)
+		body, err := templates.Body(c, in.Visibility)
+		if err != nil {
+			return nil, err
 		}
 		fmt.Fprintf(&b, "  %s:\n", c.Name)
 		line := func(s string) { fmt.Fprintf(&b, "    %s\n", s) }
@@ -71,7 +123,7 @@ func Render(in Input) ([]byte, error) {
 			line("  - " + n)
 			networks[n] = true
 		}
-		if c.HTTP != nil && on["traefik"] {
+		if c.HTTP != nil && on[manifest.Proxy] {
 			host := fmt.Sprintf("Host(`%s.localhost`)", c.HTTP.Subdomain)
 			entrypoint := "web"
 			if in.Visibility == "public" {
@@ -86,16 +138,16 @@ func Render(in Input) ([]byte, error) {
 				line(fmt.Sprintf(`  - "traefik.http.routers.%s.tls.certresolver=letsencrypt"`, c.Name))
 			}
 			line(fmt.Sprintf(`  - "traefik.http.services.%s.loadbalancer.server.port=%d"`, c.Name, c.HTTP.Container))
-			line(fmt.Sprintf(`  - "traefik.docker.network=userland_%s"`, in.Manifest.Container("traefik").Product))
+			line(fmt.Sprintf(`  - "traefik.docker.network=userland_%s"`, in.Manifest.Container(manifest.Proxy).Product))
 		}
 		var ports []string
 		for _, p := range c.Ports {
 			ports = append(ports, fmt.Sprintf(`"%d:%d"`, p, p))
 		}
 		if c.HTTP != nil {
-			portVar := envName(c.Name) + "_PORT"
+			portVar := PortVar(c.Name)
 			switch {
-			case !on["traefik"]:
+			case !on[manifest.Proxy]:
 				ports = append(ports, fmt.Sprintf(`"127.0.0.1:%d:%d"`, c.HTTP.Host, c.HTTP.Container))
 			case in.Env.Get(portVar) != "":
 				ports = append(ports, fmt.Sprintf(`"127.0.0.1:${%s}:%d"`, portVar, c.HTTP.Container))
@@ -107,18 +159,10 @@ func Render(in Input) ([]byte, error) {
 				line("  - " + p)
 			}
 		}
-		if limit := envName(c.Name) + "_MEM_LIMIT"; in.Env.Get(limit) != "" {
+		if limit := MemLimitVar(c.Name); in.Env.Get(limit) != "" {
 			line(fmt.Sprintf("mem_limit: ${%s}", limit))
 		}
-		var body bytes.Buffer
-		err := tmpl.ExecuteTemplate(&body, c.Name, data{c.Name, c.Product, in.Visibility, c.Tenant, c.HTTP})
-		if err != nil {
-			return nil, err
-		}
-		for _, l := range strings.Split(strings.Trim(body.String(), "\n"), "\n") {
-			if strings.TrimSpace(l) == "" {
-				continue
-			}
+		for _, l := range strings.Split(body, "\n") {
 			line(l)
 		}
 		for _, v := range c.Volumes {
@@ -136,6 +180,14 @@ func Render(in Input) ([]byte, error) {
 		}
 	}
 	return []byte(b.String()), nil
+}
+
+func PortVar(container string) string {
+	return envName(container) + "_PORT"
+}
+
+func MemLimitVar(container string) string {
+	return envName(container) + "_MEM_LIMIT"
 }
 
 func envName(container string) string {

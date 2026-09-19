@@ -1,0 +1,16 @@
+#!/bin/sh
+set -eu
+cd "$(dirname "$0")"
+case "$(uname -m)" in
+  x86_64|amd64) arch=amd64 ;;
+  aarch64|arm64) arch=arm64 ;;
+  *) echo "bootstrap: no Go build for $(uname -m)" >&2; exit 1 ;;
+esac
+docker run --rm \
+  --user "$(id -u):$(id -g)" \
+  --volume "$PWD":/src --workdir /src \
+  --volume userland-go:/go \
+  --env HOME=/go --env GOCACHE=/go/cache --env GOFLAGS=-buildvcs=false --env CGO_ENABLED=0 \
+  --env GOOS="$(uname -s | tr '[:upper:]' '[:lower:]')" --env GOARCH="$arch" \
+  golang:1.27-alpine go build -o userland .
+exec ./userland "$@"

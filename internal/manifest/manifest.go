@@ -10,7 +10,6 @@ import (
 
 type Manifest struct {
 	Products map[string]*Product `json:"products"`
-	order    []string
 }
 
 type Product struct {
@@ -77,11 +76,28 @@ func Load(path string) (*Manifest, error) {
 			}
 		}
 	}
+	volumes := map[string]string{}
+	hostPorts := map[int]string{}
 	for _, c := range m.All() {
 		for _, dep := range append(append([]string{}, c.Requires...), c.Optional...) {
 			if m.Container(dep) == nil {
 				return nil, fmt.Errorf("manifest.json: %s depends on %q, which no product has", c.Name, dep)
 			}
+			if dep == c.Name {
+				return nil, fmt.Errorf("manifest.json: %s depends on itself", c.Name)
+			}
+		}
+		for _, v := range c.Volumes {
+			if other, dup := volumes[v]; dup {
+				return nil, fmt.Errorf("manifest.json: volume %q is declared by both %s and %s", v, other, c.Name)
+			}
+			volumes[v] = c.Name
+		}
+		if c.HTTP != nil {
+			if other, dup := hostPorts[c.HTTP.Host]; dup {
+				return nil, fmt.Errorf("manifest.json: %s and %s both publish loopback port %d", other, c.Name, c.HTTP.Host)
+			}
+			hostPorts[c.HTTP.Host] = c.Name
 		}
 	}
 	return &m, nil
@@ -110,6 +126,24 @@ func (m *Manifest) All() []*Container {
 		return all[i].Name < all[j].Name
 	})
 	return all
+}
+
+func (m *Manifest) Names() []string {
+	var names []string
+	for _, c := range m.All() {
+		names = append(names, c.Name)
+	}
+	return names
+}
+
+func (m *Manifest) Required() map[string]bool {
+	required := map[string]bool{}
+	for _, c := range m.All() {
+		for _, r := range c.Requires {
+			required[r] = true
+		}
+	}
+	return required
 }
 
 func (m *Manifest) Blocking(name string) []string {
@@ -152,10 +186,13 @@ func (m *Manifest) Validate(on []string) Verdict {
 				v.Refusals = append(v.Refusals, fmt.Sprintf("%s is blocked by %s, which is off", c.Name, r))
 			}
 		}
+		if c.Tenant != nil && !set[Postgres] {
+			v.Refusals = append(v.Refusals, fmt.Sprintf("%s is a Postgres tenant, so %s must be on", c.Name, Postgres))
+		}
 		for _, o := range c.Optional {
 			if !set[o] {
 				w := fmt.Sprintf("%s runs without %s", c.Name, o)
-				if o == "traefik" && c.HTTP != nil {
+				if o == Proxy && c.HTTP != nil {
 					w += fmt.Sprintf(", so it publishes on 127.0.0.1:%d and is reachable from this machine only", c.HTTP.Host)
 				}
 				v.Warnings = append(v.Warnings, w)

@@ -11,6 +11,10 @@ type File struct {
 	lines []string
 }
 
+func New(path string) *File {
+	return &File{path: path}
+}
+
 func Read(path string) (*File, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {

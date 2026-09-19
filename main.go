@@ -8,39 +8,64 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/Abdullah0297445/userland/internal/check"
 	"github.com/Abdullah0297445/userland/internal/env"
 	"github.com/Abdullah0297445/userland/internal/manifest"
 	"github.com/Abdullah0297445/userland/internal/provision"
 	"github.com/Abdullah0297445/userland/internal/render"
 )
 
+const usage = `usage: userland VERB [ARGS]
+
+  render                 write compose.yml from manifest.json, the templates and .env
+  apply                  render, bring up, provision, print
+  provision              converge the door auth and every switched-on tenant
+  on CONTAINER...        switch containers on, then apply
+  off CONTAINER...       switch containers off, then apply
+  check [--write]        assert the manifest and templates hold; --write regenerates VARIABLES.md`
+
 func main() {
 	if len(os.Args) < 2 {
-		fail("usage: userland render | apply | provision | on CONTAINER... | off CONTAINER...")
+		fail(usage)
 	}
 	root, err := findRoot()
-	check(err)
+	must(err)
+	verb, args := os.Args[1], os.Args[2:]
+	if verb == "check" {
+		write := len(args) == 1 && args[0] == "--write"
+		if len(args) > 0 && !write {
+			fail(usage)
+		}
+		report, err := check.Run(root, write)
+		for _, p := range report.Passed {
+			say("ok: " + p)
+		}
+		for _, f := range report.Failures {
+			say("FAIL: " + f)
+		}
+		must(err)
+		return
+	}
 	m, err := manifest.Load(filepath.Join(root, "manifest.json"))
-	check(err)
+	must(err)
 	e, err := env.Read(filepath.Join(root, ".env"))
-	check(err)
-	check(e.Require("VISIBILITY"))
-
-	switch os.Args[1] {
+	if err != nil {
+		fail(fmt.Sprintf("no .env at %s; write one with VISIBILITY, USERLAND_ON and the variables VARIABLES.md lists", root))
+	}
+	must(e.Require("VISIBILITY"))
+	switch verb {
 	case "render":
-		check(renderFile(m, e, root))
+		must(renderFile(m, e, root))
 	case "apply":
-		check(apply(m, e, root))
+		must(apply(m, e, root))
 	case "provision":
-		report, err := provision.Tenants(m, e.List("USERLAND_ON"), e)
-		say(report...)
-		check(err)
+		must(provisionAll(m, e))
 	case "on":
-		check(toggle(m, e, root, os.Args[2:], true))
+		must(toggle(m, e, root, args, true))
 	case "off":
-		check(toggle(m, e, root, os.Args[2:], false))
+		must(toggle(m, e, root, args, false))
 	default:
-		fail("unknown subcommand " + os.Args[1])
+		fail(usage)
 	}
 }
 
@@ -69,13 +94,11 @@ func apply(m *manifest.Manifest, e *env.File, root string) error {
 		return err
 	}
 	on := e.List("USERLAND_ON")
-	if hasTenant(m, on) {
-		if err := compose(root, "up", "-d", "--wait", "postgres-18"); err != nil {
+	if contains(on, manifest.Postgres) {
+		if err := compose(root, "up", "-d", "--wait", "--remove-orphans", manifest.Postgres); err != nil {
 			return err
 		}
-		report, err := provision.Tenants(m, on, e)
-		say(report...)
-		if err != nil {
+		if err := provisionAll(m, e); err != nil {
 			return err
 		}
 	}
@@ -87,6 +110,17 @@ func apply(m *manifest.Manifest, e *env.File, root string) error {
 	}
 	closing(m, e, on)
 	return nil
+}
+
+func provisionAll(m *manifest.Manifest, e *env.File) error {
+	report, err := provision.Door(e)
+	say(report...)
+	if err != nil {
+		return err
+	}
+	report, err = provision.Tenants(m, e.List("USERLAND_ON"), e)
+	say(report...)
+	return err
 }
 
 func toggle(m *manifest.Manifest, e *env.File, root string, names []string, turnOn bool) error {
@@ -154,7 +188,7 @@ func leftBehind(m *manifest.Manifest, on []string, c *manifest.Container) {
 		}
 	}
 	if len(kept) > 0 {
-		say(fmt.Sprintf("%s is off and left behind: %s. Reclaim is not part of this skeleton.", c.Name, strings.Join(kept, ", ")))
+		say(fmt.Sprintf("%s is off and left behind: %s. Nothing is dropped unless you reclaim it.", c.Name, strings.Join(kept, ", ")))
 	}
 }
 
@@ -166,7 +200,7 @@ func closing(m *manifest.Manifest, e *env.File, on []string) {
 		}
 		if c.HTTP != nil {
 			switch {
-			case !contains(on, "traefik"):
+			case !contains(on, manifest.Proxy):
 				say(fmt.Sprintf("%s: http://127.0.0.1:%d", c.Name, c.HTTP.Host))
 			case e.Get("VISIBILITY") == "public":
 				say(fmt.Sprintf("%s: https://%s.%s", c.Name, c.HTTP.Subdomain, e.Get("DOMAIN")))
@@ -183,15 +217,6 @@ func closing(m *manifest.Manifest, e *env.File, on []string) {
 	if len(keep) > 0 {
 		say("copy these lines of .env somewhere off this machine; they cannot be regenerated: " + strings.Join(keep, ", "))
 	}
-}
-
-func hasTenant(m *manifest.Manifest, on []string) bool {
-	for _, name := range on {
-		if c := m.Container(name); c != nil && c.Tenant != nil {
-			return true
-		}
-	}
-	return false
 }
 
 func compose(root string, args ...string) error {
@@ -261,7 +286,7 @@ func fail(msg string) {
 	os.Exit(1)
 }
 
-func check(err error) {
+func must(err error) {
 	if err != nil {
 		fail(err.Error())
 	}
