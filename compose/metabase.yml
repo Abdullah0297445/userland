@@ -1,0 +1,23 @@
+{{ define "metabase" -}}
+image: metabase/metabase:v0.63.15
+environment:
+  <<: *userland-environment
+  MB_DB_TYPE: postgres
+  MB_DB_HOST: pgbouncer-transaction
+  MB_DB_PORT: 5432
+  MB_DB_DBNAME: {{ .Tenant.Name }}
+  MB_DB_USER: {{ .Tenant.Name }}
+  MB_DB_PASS: {{ ref .Tenant.Password }}
+  MB_ENCRYPTION_SECRET_KEY: ${MB_ENCRYPTION_SECRET_KEY}
+  MB_AGGREGATED_QUERY_ROW_LIMIT: ${MB_AGGREGATED_QUERY_ROW_LIMIT:-10000}
+  MB_UNAGGREGATED_QUERY_ROW_LIMIT: ${MB_UNAGGREGATED_QUERY_ROW_LIMIT:-2000}
+volumes:
+  - /dev/urandom:/dev/random:ro
+  - metabase_plugins:/plugins
+healthcheck:
+  test: ["CMD", "curl", "--fail", "-I", "http://localhost:3000/api/health"]
+  interval: 15s
+  timeout: 10s
+  retries: 5
+  start_period: 120s
+{{ end }}

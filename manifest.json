@@ -1,0 +1,51 @@
+{
+  "products": {
+    "traefik": {
+      "containers": {
+        "traefik": {
+          "ports": [80, 443],
+          "volumes": ["traefik_acme"],
+          "asks": [
+            {"var": "DOMAIN", "type": "hostname", "prompt": "Domain every hostname sits under", "when": "public"},
+            {"var": "CERT_EMAIL", "type": "email", "prompt": "Email for the ACME account", "when": "public"},
+            {"var": "DNS_PROVIDER", "type": "choice", "options": ["route53", "cloudflare"], "prompt": "DNS-01 provider", "when": "public"},
+            {"var": "AWS_ACCESS_KEY_ID", "type": "secret", "prompt": "Access key that may write TXT records in the zone", "when": "DNS_PROVIDER=route53"},
+            {"var": "AWS_SECRET_ACCESS_KEY", "type": "secret", "prompt": "Its secret", "when": "DNS_PROVIDER=route53"},
+            {"var": "CF_DNS_API_TOKEN", "type": "secret", "prompt": "Cloudflare token that may edit DNS in the zone", "when": "DNS_PROVIDER=cloudflare"}
+          ]
+        }
+      }
+    },
+    "postgres": {
+      "containers": {
+        "postgres-18": {
+          "volumes": ["postgres_data"],
+          "asks": [
+            {"var": "POSTGRES_PASSWORD", "type": "generated", "prompt": "Password of the Postgres superuser"},
+            {"var": "PGBOUNCER_AUTH_PASSWORD", "type": "generated", "prompt": "Password of the role the doors look tenants up with"}
+          ]
+        },
+        "pgbouncer-transaction": {
+          "requires": ["postgres-18"]
+        },
+        "pgbouncer-session": {
+          "requires": ["postgres-18"]
+        }
+      }
+    },
+    "metabase": {
+      "containers": {
+        "metabase": {
+          "requires": ["pgbouncer-transaction"],
+          "optional": ["traefik"],
+          "http": {"container": 3000, "host": 3000, "subdomain": "metabase"},
+          "tenant": {"name": "metabase", "password": "METABASE_DB_PASSWORD"},
+          "volumes": ["metabase_plugins"],
+          "asks": [
+            {"var": "MB_ENCRYPTION_SECRET_KEY", "type": "generated", "prompt": "Key metabase encrypts saved data-source credentials with", "keep": true}
+          ]
+        }
+      }
+    }
+  }
+}

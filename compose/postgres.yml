@@ -1,0 +1,81 @@
+{{ define "postgres-18" -}}
+image: pgvector/pgvector:pg18-trixie
+environment:
+  <<: *userland-environment
+  POSTGRES_USER: postgres
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+  PGBOUNCER_AUTH_USER: pgbouncer_auth
+  PGBOUNCER_AUTH_PASSWORD: ${PGBOUNCER_AUTH_PASSWORD}
+command:
+  - postgres
+  - -c
+  - shared_buffers=1GB
+  - -c
+  - max_connections=120
+  - -c
+  - work_mem=4MB
+  - -c
+  - maintenance_work_mem=256MB
+  - -c
+  - autovacuum_work_mem=64MB
+  - -c
+  - effective_cache_size=3GB
+  - -c
+  - max_parallel_workers=4
+  - -c
+  - log_temp_files=0
+  - -c
+  - log_autovacuum_min_duration=0
+volumes:
+  - postgres_data:/var/lib/postgresql
+  - ./initdb:/docker-entrypoint-initdb.d:ro
+healthcheck:
+  test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U postgres -d postgres"]
+  interval: 10s
+  timeout: 5s
+  retries: 5
+  start_period: 30s
+shm_size: 256m
+{{ end }}
+
+{{ define "pgbouncer-transaction" -}}
+image: edoburu/pgbouncer:v1.25.2-p0
+environment:
+  <<: *userland-environment
+  DATABASE_URL: postgres://pgbouncer_auth:${PGBOUNCER_AUTH_PASSWORD}@postgres-18:5432/
+  AUTH_TYPE: scram-sha-256
+  AUTH_USER: pgbouncer_auth
+  AUTH_QUERY: SELECT * FROM public.pgbouncer_get_auth($$1)
+  AUTH_DBNAME: postgres
+  POOL_MODE: transaction
+  LISTEN_PORT: 5432
+  MAX_CLIENT_CONN: 500
+  DEFAULT_POOL_SIZE: 15
+  MAX_DB_CONNECTIONS: 30
+healthcheck:
+  test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -p 5432"]
+  interval: 10s
+  timeout: 5s
+  retries: 5
+{{ end }}
+
+{{ define "pgbouncer-session" -}}
+image: edoburu/pgbouncer:v1.25.2-p0
+environment:
+  <<: *userland-environment
+  DATABASE_URL: postgres://pgbouncer_auth:${PGBOUNCER_AUTH_PASSWORD}@postgres-18:5432/
+  AUTH_TYPE: scram-sha-256
+  AUTH_USER: pgbouncer_auth
+  AUTH_QUERY: SELECT * FROM public.pgbouncer_get_auth($$1)
+  AUTH_DBNAME: postgres
+  POOL_MODE: session
+  LISTEN_PORT: 5432
+  MAX_CLIENT_CONN: 500
+  DEFAULT_POOL_SIZE: 25
+  MAX_DB_CONNECTIONS: 30
+healthcheck:
+  test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -p 5432"]
+  interval: 10s
+  timeout: 5s
+  retries: 5
+{{ end }}
