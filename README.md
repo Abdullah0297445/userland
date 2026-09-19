@@ -22,9 +22,11 @@ runs *for you*. This repo is that layer, for one host.
 | **The proxy** | traefik, terminating TLS for everything else. |
 | **The datastores** | One Postgres, one Redis, one ClickHouse. Shared — one of each for the whole host, never one per application. |
 | **The applications** | n8n, Metabase, Langfuse, Twenty, neo4j. |
+| **fort** | Keeps the files you name, `.env` first, encrypted in a bucket of their own under a master key that never touches the host. |
 
-One thing is pointed at rather than run: an S3-compatible object store you bring, which the
-Postgres backup and Langfuse both need.
+Two things are pointed at rather than run: an S3-compatible object store you bring, which
+the Postgres backup, Langfuse and fort each need a bucket of, and a secret store you own,
+which holds fort's master key.
 
 Each application is a Postgres tenant — its own role and database on the shared Postgres.
 The backup discovers databases by reading the server rather than by being handed a list, so
@@ -61,7 +63,7 @@ answers on this machine only, at a loopback port of its own.
 | `bootstrap` | Builds the CLI inside docker and runs it. The one command; docker is all it needs. |
 | `manifest.json` | What every container depends on and what it needs asked. The CLI trusts nothing else. |
 | `compose/` | One template per product. The CLI renders `compose.yml` from them; nothing is ever run from inside it. |
-| `scripts/` | Shell that runs inside a container — the backup's schedule and dump. Nothing here runs on the host. |
+| `scripts/` | Shell that runs inside a container — the backups' schedules, the dump, fort's run. Nothing here runs on the host. |
 | `initdb/` | First-start initialisation for a datastore. Runs once, against an empty volume, and never again. |
 | `config/` | Configuration files a container mounts, checked in because they hold nothing secret. |
 | `consumer/` | Files you copy into a project of your own. userland never runs them. |
@@ -82,6 +84,7 @@ on and off is a container, not a folder.
   `.gitignore` excludes it before your first commit, and keep a copy somewhere off this
   machine. Some of what it holds — encryption keys a container writes data with — cannot be
   regenerated, and losing them loses the data. The CLI names those lines when it finishes;
-  copy them somewhere before anything runs. Where they go is yours to decide.
+  copy them somewhere before anything runs, or switch on fort and it keeps `.env` for
+  you, under a master key that lives in a secret store you own.
 
 See [CONTEXT.md](CONTEXT.md) for the language this repo uses.

@@ -167,8 +167,9 @@ door.
 _Avoid_: connection URL, database URL, credentials
 
 **Archive**:
-The backup of one tenant database. One archive restores one tenant alone.
-_Avoid_: dump, backup file, snapshot
+The backup of one tenant database, or of one listed file. One archive restores one tenant
+or one file alone.
+_Avoid_: dump, backup file, snapshot, copy
 
 **Globals**:
 The Postgres objects outside every tenant database: the tenant roles and their passwords.
@@ -195,3 +196,25 @@ _Avoid_: service account, api user
 The role a PostgREST request takes when it carries no valid token. It cannot log in
 directly.
 _Avoid_: public role, guest
+
+## fort
+
+**Listed file**:
+A file on the host, named by its absolute path, that fort keeps. userland's own `.env` is
+always one.
+_Avoid_: env file, secret file, watched file, tracked file
+
+**Master key**:
+The one secret that encrypts every file fort keeps. It lives in a secret store, never on
+the host, and fort reads it at each run. Lose it and every archive is waste.
+_Avoid_: passphrase, backup key, encryption key, secret
+
+**Secret store**:
+A service you own, outside the host, that holds the master key. userland reads it and
+never writes it. An external dependency.
+_Avoid_: vault, parameter store (as the category), key store, KMS
+
+**Restore**:
+Writing every archive fort holds back onto the host at the path it came from, over
+whatever is there. Deliberate, by hand, never on a schedule.
+_Avoid_: recover, pull, sync
