@@ -15,10 +15,10 @@ The unit you switch on. One container is one compose service, and nothing larger
 smaller is ever switched; Postgres without pgadmin is a valid choice.
 _Avoid_: service, unit, component, module, profile
 
-**Fragment**:
-One compose file that the root includes. Which containers share a fragment carries no
-meaning, and nothing is ever run from one.
-_Avoid_: compose file, stack file, override
+**Template**:
+A tracked file the CLI renders a container's compose definition from, one per product.
+Which containers share a template carries no meaning, and nothing is ever run from one.
+_Avoid_: fragment, compose file, stack file, override
 
 **Datastore**:
 A container that stores structured data, such as Postgres, Redis or ClickHouse.
@@ -93,6 +93,16 @@ The one record the interview trusts for what every container depends on and what
 asked.
 _Avoid_: registry, catalog, dependency file
 
+**Render**:
+Writing the one compose file the host runs, from the manifest, the templates and the
+selection. It holds only what is switched on, it holds no secret, and nobody edits it.
+_Avoid_: generate, build, compile
+
+**Apply**:
+Making the host match the selection and `.env`: render, bring up, provision, print. Every
+change to the selection or to `.env` ends with one.
+_Avoid_: deploy, sync, reconcile, up
+
 **Refusal**:
 The interview stopping on a selection that cannot run, naming what is missing.
 _Avoid_: error, validation failure, abort
@@ -103,8 +113,8 @@ _Avoid_: notice, hint, caution
 
 **Provisioning**:
 Making what a selection depends on exist before it runs, whether roles, databases, buckets
-or access keys, and changing nothing that already exists. A consumer is provisioned by the
-same path.
+or access keys. What userland's own containers need converges on `.env`; what a consumer
+was given is never changed once it exists. A consumer is provisioned by the same path.
 _Avoid_: seeding, bootstrapping, init, setup, migration
 
 **Reclaim**:

@@ -4,3 +4,5 @@
 *.gpg
 .idea/
 .DS_Store
+/userland
+/compose.yml
