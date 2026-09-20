@@ -8,10 +8,10 @@ with its database already provisioned and already being backed up.
 There is no application code here. userland is the ground your own projects stand on,
 and it is deliberately not one of them.
 
-> **This repo is being built in the open.** Today the interview writes `.env`, and userland
-> renders and runs traefik, Postgres with its doors, and Metabase. The remaining verbs and
-> the other containers arrive one at a time. The design is published as issues on this repo
-> as it is settled.
+> **This repo is being built in the open.** Today the interview writes `.env`, every verb
+> exists, and userland renders and runs traefik, Postgres with its doors, and Metabase. The
+> other containers arrive one at a time. The design is published as issues on this repo as
+> it is settled.
 
 `userland` is the part of a running system that is not the kernel: everything the machine
 runs *for you*. This repo is that layer, for one host.
@@ -86,12 +86,23 @@ interview never asks again for what is already there.
 | Verb | What it does |
 |---|---|
 | `./bootstrap` | The interview: ask what is new, write `.env`, apply. |
+| `./bootstrap on NAME…` | Switch containers on, then apply. A product's name opens its gate instead, with what is on already ticked. Asks whatever variable the new selection needs before writing anything. |
+| `./bootstrap off CONTAINER…` | Switch containers off, then apply. Refuses while a container is blocking another, naming the dependents. Prints what it left behind and offers to reclaim it; answering nothing keeps it. |
+| `./bootstrap set VAR` | Ask one variable again, then apply. `set VISIBILITY` switches visibility and then asks whatever the new one needs. Only asked variables: an optional one is a line you add by hand. |
+| `./bootstrap reclaim CONTAINER…` | Drop the volume and the database a switched-off container left, after naming them and asking. |
+| `./bootstrap contract` | Print the Contract: what a consumer needs to use userland. |
+| `./bootstrap postgres database add NAME` | Make a consumer's database and user, and print the DSN once. `--session` names the session door; `--api` adds the PostgREST recipe. |
+| `./bootstrap postgres database remove NAME` | Drop a consumer's database and its users, after asking. |
 | `./bootstrap apply` | Render, bring up, provision, print. |
-| `./bootstrap on CONTAINER…` | Switch containers on, then apply. |
-| `./bootstrap off CONTAINER…` | Switch containers off, then apply. Refuses while a container is blocking another, naming the dependents. Prints what it left behind. |
 | `./bootstrap render` | Write `compose.yml` and stop. |
 | `./bootstrap provision` | Converge the door's auth user and every switched-on database, and nothing else. |
+| `./bootstrap new PRODUCT CONTAINER…` | For contributors: append a product to `manifest.json` and write its template, with placeholders. |
 | `./bootstrap check [--write]` | Assert the manifest and templates hold. `--write` regenerates `VARIABLES.md`. |
+
+`./bootstrap --help` lists the same verbs, grouped the same way; a product's verbs sit under
+the product's name, so `postgres` has `database`, and a later backup verb would join it there.
+Every verb that changes `.env` ends with an apply, and every verb that drops something asks
+first and defaults to no.
 
 ### What apply does
 
@@ -107,6 +118,19 @@ interview never asks again for what is already there.
 
 Switching traefik on or off recreates every HTTP container, because their labels and
 published ports change. That is expected and loses nothing.
+
+### Switching off, and reclaiming
+
+`off` removes the container and keeps its named volumes and its database, then names them
+and offers to reclaim them. Decline, and `reclaim CONTAINER` drops them later, after naming
+them again and asking. A database shared with a container that is still on is not offered.
+Reclaiming `postgres-18` drops its volume, and every database on Postgres lives in it, which
+the question says. The product's network stays until `docker compose down`; it costs
+nothing.
+
+There is no verb that switches everything off: an empty selection is a refusal. To stop
+the host, `docker compose down` stops every container and keeps every volume; the next
+apply brings them back.
 
 ### The interview
 
@@ -165,6 +189,40 @@ differ, so a re-run changes nothing, a hand-edited or restored `.env` heals itse
 rotating a password is one edit plus an apply. Passwords travel on stdin, never on a
 command line. Nothing is ever dropped.
 
+## For a consumer
+
+A **consumer** is a project of your own that uses userland and is not part of it. The
+Contract is everything it needs, and `./bootstrap contract` prints it for the visibility
+you are in:
+
+- **Two networks**, `userland_postgres` and `userland_traefik`, which the consumer's compose
+  file declares as `external: true` and joins.
+- **Two doors to Postgres**, both on port 5432, and the DSN names one. `pgbouncer-transaction`
+  is the default, for a consumer that keeps no state on a connection between transactions.
+  `pgbouncer-session` is for one that does, whether a `SET`, a `LISTEN`, a session-scoped
+  advisory lock or a prepared statement it reuses; it pins one Postgres connection for as
+  long as the consumer holds its own, so the consumer must release connections promptly.
+  `pg_dump`, pgadmin and PostgREST bypass the doors and name `postgres-18:5432` directly.
+- **traefik's labels**: the rule (`NAME.localhost`, or `NAME.DOMAIN` in public), the
+  entrypoint (`web`, or `websecure` in public with the certificate resolver `letsencrypt`),
+  the port, and `traefik.docker.network=userland_traefik`.
+
+`./bootstrap postgres database add NAME` makes the consumer's database and a user of the same
+name that owns it, with `CONNECT` revoked from everyone else, `CREATE` on `public` revoked,
+and the `vector` extension installed, then prints the DSN once, followed by the Contract.
+userland keeps no copy of that password you can read back: paste it into the consumer's own
+gitignored `.env`, and keep the record where you keep such things. A name that exists stops
+the verb rather than overwriting, and a product's database is refused, since provisioning
+makes those. `--session` prints a DSN that names the session door instead. `--api` adds the
+PostgREST recipe inside the database, an `api` schema owned by the consumer, an
+authenticator user that holds no table rights and inherits none, an anonymous user that
+cannot log in, and an event trigger that tells PostgREST to reload its schema cache after a
+migration, and prints a second DSN for PostgREST that names `postgres-18` directly.
+
+`./bootstrap postgres database remove NAME` drops the database and every user the recipe
+made, after naming them and asking. Redis and ClickHouse stay out of the Contract until a
+consumer needs them.
+
 ## check
 
 `check` renders with every container on, in both visibilities, runs
@@ -199,7 +257,7 @@ interview does not know.
 | `initdb/` | First-start initialisation for a datastore. Runs once, against an empty volume, and never again. Empty today: what used to live here is provisioned instead. |
 | `config/` | Configuration files a container mounts, checked in because they hold nothing secret. |
 | `consumer/` | Files you copy into a project of your own. userland never runs them. |
-| `main.go`, `internal/` | The CLI, in Go, on the standard library plus [huh](https://github.com/charmbracelet/huh) for the interview's prompts. |
+| `main.go`, `internal/` | The CLI, in Go, on the standard library plus [huh](https://github.com/charmbracelet/huh) for the prompts and [cobra](https://github.com/spf13/cobra) for the verbs. |
 
 `compose.yml`, `.env` and the `userland` binary are yours and untracked. Support
 directories are grouped **by kind, at the root** — `scripts/`, never `metabase/scripts/`.
@@ -209,7 +267,9 @@ on and off is a container, not a folder.
 ## Adding a container
 
 A container is a block in `manifest.json` and a `{{ define "<container>" }}` in its
-product's `compose/<product>.yml`. `check` tells you what is missing.
+product's `compose/<product>.yml`. `./bootstrap new PRODUCT CONTAINER…` writes both with
+placeholders and regenerates `VARIABLES.md`, so you start green; `check` then tells you what
+is missing as you fill them in.
 
 ### The manifest
 
@@ -243,9 +303,10 @@ product's `compose/<product>.yml`. `check` tells you what is missing.
 
 ### Names the CLI knows
 
-Three names are kinds the CLI defines rather than manifest data: `traefik`, whose
+Five names are kinds the CLI defines rather than manifest data: `traefik`, whose
 presence decides labels and loopback ports; `postgres-18`, which provisioning execs into
-and which every container with a database requires; and `pgbouncer_auth`, the user both
+and which every container with a database requires; `pgbouncer-transaction` and
+`pgbouncer-session`, the two doors the Contract names; and `pgbouncer_auth`, the user both
 doors look passwords up with.
 
 ## Notes

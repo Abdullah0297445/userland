@@ -66,9 +66,16 @@ const (
 var AskTypes = []string{Text, Hostname, Email, URL, Port, Secret, Generated, Choice, Paths}
 
 var (
-	identifier = regexp.MustCompile(`^[a-z][a-z0-9_]{0,62}$`)
-	variable   = regexp.MustCompile(`^[A-Z][A-Z0-9_]*$`)
+	identifierPattern = regexp.MustCompile(`^[a-z][a-z0-9_]{0,62}$`)
+	variablePattern   = regexp.MustCompile(`^[A-Z][A-Z0-9_]*$`)
+	namePattern       = regexp.MustCompile(`^[a-z][a-z0-9-]{0,62}$`)
 )
+
+func ValidIdentifier(s string) bool { return identifierPattern.MatchString(s) }
+
+func ValidVariable(s string) bool { return variablePattern.MatchString(s) }
+
+func ValidName(s string) bool { return namePattern.MatchString(s) }
 
 func (a Ask) Applies(visibility string, value func(string) string) bool {
 	switch a.When {
@@ -85,11 +92,26 @@ func (a Ask) Hidden() bool {
 	return a.Type == Secret || a.Type == Generated
 }
 
+func (a Ask) Condition() string {
+	switch a.When {
+	case "":
+		return "always"
+	case "public", "local":
+		return "visibility is " + a.When
+	}
+	name, want, _ := strings.Cut(a.When, "=")
+	return name + " is " + want
+}
+
 func Load(path string) (*Manifest, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
+	return Parse(raw)
+}
+
+func Parse(raw []byte) (*Manifest, error) {
 	var m Manifest
 	if err := json.Unmarshal(raw, &m); err != nil {
 		return nil, fmt.Errorf("manifest.json: %w", err)
@@ -107,10 +129,10 @@ func Load(path string) (*Manifest, error) {
 				c.HTTP.Subdomain = name
 			}
 			if c.Postgres != nil {
-				if !identifier.MatchString(c.Postgres.Database) {
+				if !ValidIdentifier(c.Postgres.Database) {
 					return nil, fmt.Errorf("manifest.json: database %q of %s is not a valid Postgres identifier", c.Postgres.Database, name)
 				}
-				if !variable.MatchString(c.Postgres.Password) {
+				if !ValidVariable(c.Postgres.Password) {
 					return nil, fmt.Errorf("manifest.json: %s names its database password %q, which is not a variable name", name, c.Postgres.Password)
 				}
 			}
@@ -148,7 +170,7 @@ func Load(path string) (*Manifest, error) {
 
 func (c *Container) checkAsks() error {
 	for _, a := range c.Asks {
-		if !variable.MatchString(a.Var) {
+		if !ValidVariable(a.Var) {
 			return fmt.Errorf("manifest.json: %s asks %q, which is not a variable name", c.Name, a.Var)
 		}
 		if !contains(AskTypes, a.Type) {
@@ -162,16 +184,31 @@ func (c *Container) checkAsks() error {
 		}
 	}
 	for old, now := range c.Renamed {
-		if !variable.MatchString(old) || !variable.MatchString(now) {
+		if !ValidVariable(old) || !ValidVariable(now) {
 			return fmt.Errorf("manifest.json: %s renames %q to %q; both must be variable names", c.Name, old, now)
 		}
 	}
 	for _, name := range c.Removed {
-		if !variable.MatchString(name) {
+		if !ValidVariable(name) {
 			return fmt.Errorf("manifest.json: %s removes %q, which is not a variable name", c.Name, name)
 		}
 	}
 	return nil
+}
+
+func (c *Container) PasswordAsk() (Ask, bool) {
+	if c.Postgres == nil {
+		return Ask{}, false
+	}
+	return Ask{Var: c.Postgres.Password, Type: Generated, Prompt: fmt.Sprintf("Password of the %s user on Postgres", c.Postgres.Database)}, true
+}
+
+func (c *Container) AllAsks() []Ask {
+	asks := append([]Ask{}, c.Asks...)
+	if a, ok := c.PasswordAsk(); ok {
+		asks = append(asks, a)
+	}
+	return asks
 }
 
 func (m *Manifest) Container(name string) *Container {
@@ -181,6 +218,38 @@ func (m *Manifest) Container(name string) *Container {
 		}
 	}
 	return nil
+}
+
+func (m *Manifest) Database(database string) *Container {
+	for _, c := range m.All() {
+		if c.Postgres != nil && c.Postgres.Database == database {
+			return c
+		}
+	}
+	return nil
+}
+
+func (m *Manifest) SharesDatabase(c *Container, on []string) bool {
+	if c.Postgres == nil {
+		return false
+	}
+	for _, other := range m.All() {
+		if other.Name != c.Name && other.Postgres != nil && other.Postgres.Database == c.Postgres.Database && contains(on, other.Name) {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *Manifest) AskFor(name string) (*Container, Ask, bool) {
+	for _, c := range m.All() {
+		for _, a := range c.AllAsks() {
+			if a.Var == name {
+				return c, a, true
+			}
+		}
+	}
+	return nil, Ask{}, false
 }
 
 func (m *Manifest) All() []*Container {

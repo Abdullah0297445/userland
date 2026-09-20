@@ -3,6 +3,7 @@ package provision
 import (
 	"crypto/hmac"
 	"crypto/pbkdf2"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"fmt"
@@ -15,10 +16,12 @@ import (
 )
 
 const (
-	server       = manifest.Postgres
-	AuthUser     = "pgbouncer_auth"
-	AuthPassword = "PGBOUNCER_AUTH_PASSWORD"
-	authFunction = "pgbouncer_get_auth"
+	server        = manifest.Postgres
+	AuthUser      = "pgbouncer_auth"
+	AuthPassword  = "PGBOUNCER_AUTH_PASSWORD"
+	authFunction  = "pgbouncer_get_auth"
+	APISchema     = "api"
+	watchFunction = "pgrst_watch"
 )
 
 func Door(e *env.File) ([]string, error) {
@@ -111,15 +114,8 @@ func converge(name, password string) ([]string, error) {
 		return did, err
 	}
 	if db != "1" {
-		statements := []struct{ db, sql string }{
-			{"postgres", fmt.Sprintf("CREATE DATABASE %s OWNER %s", ident(name), ident(name))},
-			{"postgres", fmt.Sprintf("REVOKE CONNECT ON DATABASE %s FROM PUBLIC; GRANT CONNECT ON DATABASE %s TO %s", ident(name), ident(name), ident(name))},
-			{name, "REVOKE CREATE ON SCHEMA public FROM PUBLIC; CREATE EXTENSION IF NOT EXISTS vector"},
-		}
-		for _, s := range statements {
-			if err := run(s.db, s.sql); err != nil {
-				return did, err
-			}
+		if err := createDatabase(name); err != nil {
+			return did, err
 		}
 		did = append(did, "created database "+name)
 	}
@@ -135,6 +131,132 @@ func converge(name, password string) ([]string, error) {
 	}
 	if len(did) == 0 {
 		did = append(did, "database "+name+" unchanged")
+	}
+	return did, nil
+}
+
+func createDatabase(name string) error {
+	statements := []struct{ db, sql string }{
+		{"postgres", fmt.Sprintf("CREATE DATABASE %s OWNER %s", ident(name), ident(name))},
+		{"postgres", fmt.Sprintf("REVOKE CONNECT ON DATABASE %s FROM PUBLIC; GRANT CONNECT ON DATABASE %s TO %s", ident(name), ident(name), ident(name))},
+		{name, "REVOKE CREATE ON SCHEMA public FROM PUBLIC; CREATE EXTENSION IF NOT EXISTS vector"},
+	}
+	for _, s := range statements {
+		if err := run(s.db, s.sql); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+type Consumer struct {
+	Name          string
+	Password      string
+	Authenticator string
+	Anon          string
+	APIPassword   string
+}
+
+func Authenticator(name string) string { return name + "_authenticator" }
+
+func Anon(name string) string { return name + "_anon" }
+
+func AddConsumer(name string, api bool) (*Consumer, error) {
+	p, err := Exists(name)
+	if err != nil {
+		return nil, err
+	}
+	if p.Database {
+		return nil, fmt.Errorf("the database %s already exists; nothing was changed", name)
+	}
+	if len(p.Users) > 0 {
+		return nil, fmt.Errorf("the user %s exists without its database; nothing was changed", strings.Join(p.Users, ", "))
+	}
+	c := &Consumer{Name: name, Password: rand.Text()}
+	if err := run("postgres", fmt.Sprintf("CREATE ROLE %s LOGIN PASSWORD %s", ident(name), literal(c.Password))); err != nil {
+		return nil, err
+	}
+	if err := createDatabase(name); err != nil {
+		return nil, err
+	}
+	if !api {
+		return c, nil
+	}
+	c.Authenticator, c.Anon, c.APIPassword = Authenticator(name), Anon(name), rand.Text()
+	recipe := strings.Join([]string{
+		"BEGIN",
+		fmt.Sprintf("CREATE SCHEMA IF NOT EXISTS %s AUTHORIZATION %s", APISchema, ident(name)),
+		fmt.Sprintf("CREATE ROLE %s LOGIN NOINHERIT NOCREATEDB NOCREATEROLE NOSUPERUSER PASSWORD %s", ident(c.Authenticator), literal(c.APIPassword)),
+		fmt.Sprintf("CREATE ROLE %s NOLOGIN", ident(c.Anon)),
+		fmt.Sprintf("GRANT %s TO %s", ident(c.Anon), ident(c.Authenticator)),
+		fmt.Sprintf("GRANT CONNECT ON DATABASE %s TO %s", ident(name), ident(c.Authenticator)),
+		fmt.Sprintf("GRANT USAGE ON SCHEMA %s TO %s", APISchema, ident(c.Anon)),
+		fmt.Sprintf("CREATE OR REPLACE FUNCTION public.%s() RETURNS event_trigger LANGUAGE plpgsql AS $$ BEGIN NOTIFY pgrst, 'reload schema'; END; $$", watchFunction),
+		fmt.Sprintf("CREATE EVENT TRIGGER %s ON ddl_command_end EXECUTE FUNCTION public.%s()", watchFunction, watchFunction),
+		"COMMIT",
+	}, ";\n")
+	if err := run(name, recipe); err != nil {
+		return nil, err
+	}
+	return c, nil
+}
+
+type Presence struct {
+	Database bool
+	Users    []string
+}
+
+func (p Presence) Empty() bool {
+	return !p.Database && len(p.Users) == 0
+}
+
+func (p Presence) String() string {
+	var parts []string
+	if p.Database {
+		parts = append(parts, "the database")
+	}
+	for _, u := range p.Users {
+		parts = append(parts, "the user "+u)
+	}
+	return strings.Join(parts, ", ")
+}
+
+func Exists(name string) (Presence, error) {
+	var p Presence
+	db, err := query("postgres", "SELECT 1 FROM pg_database WHERE datname = "+literal(name))
+	if err != nil {
+		return p, err
+	}
+	p.Database = db == "1"
+	for _, role := range []string{name, Authenticator(name), Anon(name)} {
+		r, err := query("postgres", "SELECT 1 FROM pg_roles WHERE rolname = "+literal(role))
+		if err != nil {
+			return p, err
+		}
+		if r == "1" {
+			p.Users = append(p.Users, role)
+		}
+	}
+	return p, nil
+}
+
+func Drop(name string) ([]string, error) {
+	var did []string
+	p, err := Exists(name)
+	if err != nil {
+		return did, err
+	}
+	if p.Database {
+		if err := run("postgres", fmt.Sprintf("DROP DATABASE %s WITH (FORCE)", ident(name))); err != nil {
+			return did, err
+		}
+		did = append(did, "dropped database "+name)
+	}
+	for _, role := range p.Users {
+		if err := run("postgres", "DROP ROLE "+ident(role)); err != nil {
+			return did, err
+		}
+		did = append(did, "dropped user "+role)
 	}
 	return did, nil
 }

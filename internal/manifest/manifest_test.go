@@ -83,3 +83,50 @@ func TestAskApplies(t *testing.T) {
 		}
 	}
 }
+
+func TestAskForFindsAskedAndImpliedVariables(t *testing.T) {
+	m, err := Load(filepath.Join("..", "..", "manifest.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, a, ok := m.AskFor("METABASE_DB_PASSWORD")
+	if !ok || c.Name != "metabase" || a.Type != Generated {
+		t.Fatalf("implied password: %v %v %v", ok, c, a)
+	}
+	c, a, ok = m.AskFor("CF_DNS_API_TOKEN")
+	if !ok || c.Name != "traefik" || a.Condition() != "DNS_PROVIDER is cloudflare" {
+		t.Fatalf("traefik ask: %v %v %q", ok, c, a.Condition())
+	}
+	if _, _, ok := m.AskFor("METABASE_PORT"); ok {
+		t.Fatal("an optional variable is not asked")
+	}
+	if (Ask{When: "public"}).Condition() != "visibility is public" || (Ask{}).Condition() != "always" {
+		t.Fatal("conditions read wrong")
+	}
+}
+
+func TestDatabaseAndSharesDatabase(t *testing.T) {
+	m, err := load(t, `{"products": {
+		"postgres": {"containers": {"postgres-18": {}}},
+		"langfuse": {"containers": {
+			"langfuse-web": {"postgres": {"database": "langfuse", "password": "LANGFUSE_DB_PASSWORD"}},
+			"langfuse-worker": {"requires": ["langfuse-web"], "postgres": {"database": "langfuse", "password": "LANGFUSE_DB_PASSWORD"}}
+		}}
+	}}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.Database("langfuse") == nil || m.Database("nobody") != nil {
+		t.Fatal("Database lookup")
+	}
+	web := m.Container("langfuse-web")
+	if !m.SharesDatabase(web, []string{"langfuse-worker", "postgres-18"}) {
+		t.Fatal("worker still on, database is shared")
+	}
+	if m.SharesDatabase(web, []string{"postgres-18"}) {
+		t.Fatal("nobody else on, database is not shared")
+	}
+	if !ValidIdentifier("app_1") || ValidIdentifier("1app") || ValidIdentifier("App") || !ValidName("pgbouncer-transaction") || ValidName("a_b") {
+		t.Fatal("name rules")
+	}
+}
