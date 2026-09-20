@@ -13,8 +13,12 @@ import (
 )
 
 const (
+	Project   = "userland"
 	Anchor    = "userland-environment"
 	MergeLine = "<<: *" + Anchor
+	Resolver  = "letsencrypt"
+	Web       = "web"
+	Secure    = "websecure"
 )
 
 var Owned = []string{"container_name", "restart", "depends_on", "networks", "labels", "ports", "mem_limit"}
@@ -90,7 +94,7 @@ func Render(in Input) ([]byte, error) {
 		on[name] = true
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "name: userland\n\nx-%s: &%s\n  TZ: UTC\n\nservices:\n", Anchor, Anchor)
+	fmt.Fprintf(&b, "name: %s\n\nx-%s: &%s\n  TZ: UTC\n\nservices:\n", Project, Anchor, Anchor)
 	networks := map[string]bool{}
 	volumes := map[string]bool{}
 	for _, c := range in.Manifest.All() {
@@ -125,20 +129,20 @@ func Render(in Input) ([]byte, error) {
 		}
 		if c.HTTP != nil && on[manifest.Proxy] {
 			host := fmt.Sprintf("Host(`%s.localhost`)", c.HTTP.Subdomain)
-			entrypoint := "web"
+			entrypoint := Web
 			if in.Visibility == "public" {
 				host = fmt.Sprintf("Host(`%s.${DOMAIN}`)", c.HTTP.Subdomain)
-				entrypoint = "websecure"
+				entrypoint = Secure
 			}
 			line("labels:")
 			line(`  - "traefik.enable=true"`)
 			line(fmt.Sprintf(`  - "traefik.http.routers.%s.rule=%s"`, c.Name, host))
 			line(fmt.Sprintf(`  - "traefik.http.routers.%s.entrypoints=%s"`, c.Name, entrypoint))
 			if in.Visibility == "public" {
-				line(fmt.Sprintf(`  - "traefik.http.routers.%s.tls.certresolver=letsencrypt"`, c.Name))
+				line(fmt.Sprintf(`  - "traefik.http.routers.%s.tls.certresolver=%s"`, c.Name, Resolver))
 			}
 			line(fmt.Sprintf(`  - "traefik.http.services.%s.loadbalancer.server.port=%d"`, c.Name, c.HTTP.Container))
-			line(fmt.Sprintf(`  - "traefik.docker.network=userland_%s"`, in.Manifest.Container(manifest.Proxy).Product))
+			line(fmt.Sprintf(`  - "traefik.docker.network=%s"`, Network(in.Manifest.Container(manifest.Proxy).Product)))
 		}
 		var ports []string
 		for _, p := range c.Ports {
@@ -180,6 +184,14 @@ func Render(in Input) ([]byte, error) {
 		}
 	}
 	return []byte(b.String()), nil
+}
+
+func Network(product string) string {
+	return Project + "_" + product
+}
+
+func VolumeName(volume string) string {
+	return Project + "_" + volume
 }
 
 func PortVar(container string) string {

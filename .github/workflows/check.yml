@@ -9,3 +9,4 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - run: ./bootstrap check
+      - run: docker run --rm --user "$(id -u):$(id -g)" --volume "$PWD":/src --workdir /src --volume userland-go:/go --env HOME=/go --env GOCACHE=/go/cache --env GOFLAGS=-buildvcs=false golang:1.27-alpine go test ./...

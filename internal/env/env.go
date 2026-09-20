@@ -28,12 +28,23 @@ func Read(path string) (*File, error) {
 	return f, nil
 }
 
-func (f *File) Get(key string) string {
+func (f *File) index(key string) int {
 	prefix := key + "="
-	for _, line := range f.lines {
+	for i, line := range f.lines {
 		if strings.HasPrefix(line, prefix) {
-			return strings.TrimPrefix(line, prefix)
+			return i
 		}
+	}
+	return -1
+}
+
+func (f *File) Has(key string) bool {
+	return f.index(key) >= 0
+}
+
+func (f *File) Get(key string) string {
+	if i := f.index(key); i >= 0 {
+		return strings.TrimPrefix(f.lines[i], key+"=")
 	}
 	return ""
 }
@@ -49,14 +60,32 @@ func (f *File) List(key string) []string {
 }
 
 func (f *File) Set(key, value string) {
-	prefix := key + "="
-	for i, line := range f.lines {
-		if strings.HasPrefix(line, prefix) {
-			f.lines[i] = prefix + value
-			return
-		}
+	line := key + "=" + value
+	if i := f.index(key); i >= 0 {
+		f.lines[i] = line
+		return
 	}
-	f.lines = append(f.lines, prefix+value)
+	f.lines = append(f.lines, line)
+}
+
+func (f *File) Remove(key string) bool {
+	i := f.index(key)
+	if i < 0 {
+		return false
+	}
+	f.lines = append(f.lines[:i], f.lines[i+1:]...)
+	return true
+}
+
+func (f *File) Rename(old, now string) bool {
+	if !f.Has(old) {
+		return false
+	}
+	if !f.Has(now) {
+		f.Set(now, f.Get(old))
+	}
+	f.Remove(old)
+	return true
 }
 
 func (f *File) Write() error {
