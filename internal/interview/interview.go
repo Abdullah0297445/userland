@@ -43,10 +43,7 @@ func (r *Result) Changed() bool {
 func Run(m *manifest.Manifest, e *env.File, out io.Writer) (*Result, error) {
 	r := &Result{}
 	if e.Get(Visibility) == "" {
-		v, err := selectOne("Visibility", "Chosen once, for the whole of userland.", []option{
-			{"local: this machine only, on *.localhost, with no domain and no certificate", "local"},
-			{"public: real hostnames under your domain, with TLS from a DNS-01 challenge", "public"},
-		})
+		v, err := SelectVisibility()
 		if err != nil {
 			return nil, err
 		}
@@ -55,26 +52,26 @@ func Run(m *manifest.Manifest, e *env.File, out io.Writer) (*Result, error) {
 	}
 	on, off := e.List(On), e.List(Off)
 	for _, product := range m.ProductOrder() {
-		var fresh []option
+		var fresh []*manifest.Container
 		for _, c := range m.ProductContainers(product) {
 			if contains(on, c.Name) || contains(off, c.Name) {
 				continue
 			}
-			fresh = append(fresh, option{label(m, c), c.Name})
+			fresh = append(fresh, c)
 		}
 		if len(fresh) == 0 {
 			continue
 		}
-		picked, err := selectMany(product, "Tick what to switch on. Anything left unticked is recorded as off and not asked again.", fresh)
+		picked, err := Gate(m, product, fresh, nil, "Tick what to switch on. Anything left unticked is recorded as off and not asked again.")
 		if err != nil {
 			return nil, err
 		}
-		for _, o := range fresh {
-			r.Offered = append(r.Offered, o.value)
-			if contains(picked, o.value) {
-				on = append(on, o.value)
+		for _, c := range fresh {
+			r.Offered = append(r.Offered, c.Name)
+			if contains(picked, c.Name) {
+				on = append(on, c.Name)
 			} else {
-				off = append(off, o.value)
+				off = append(off, c.Name)
 			}
 		}
 	}
@@ -91,47 +88,54 @@ func Run(m *manifest.Manifest, e *env.File, out io.Writer) (*Result, error) {
 	r.On, r.Off = on, off
 	e.Set(On, strings.Join(on, ","))
 	e.Set(Off, strings.Join(off, ","))
+	asked, err := Variables(m, e)
+	r.Asked = asked
+	if err != nil {
+		return nil, err
+	}
+	return r, nil
+}
+
+func SelectVisibility() (string, error) {
+	return selectOne("Visibility", "Chosen once, for the whole of userland.", []option{
+		{label: "local: this machine only, on *.localhost, with no domain and no certificate", value: "local"},
+		{label: "public: real hostnames under your domain, with TLS from a DNS-01 challenge", value: "public"},
+	})
+}
+
+func Gate(m *manifest.Manifest, product string, containers []*manifest.Container, ticked []string, description string) ([]string, error) {
+	var options []option
+	for _, c := range containers {
+		options = append(options, option{label(m, c), c.Name, contains(ticked, c.Name)})
+	}
+	return selectMany(product, description, options)
+}
+
+func Variables(m *manifest.Manifest, e *env.File) ([]string, error) {
+	on := e.List(On)
+	var asked []string
 	for _, product := range m.ProductOrder() {
 		for _, c := range m.ProductContainers(product) {
 			if !contains(on, c.Name) {
 				continue
 			}
-			asked, err := askContainer(c, e)
-			r.Asked = append(r.Asked, asked...)
-			if err != nil {
-				return nil, err
+			for _, a := range c.AllAsks() {
+				if !a.Applies(e.Get(Visibility), e.Get) || e.Get(a.Var) != "" {
+					continue
+				}
+				value, err := Ask(a)
+				if err != nil {
+					return asked, err
+				}
+				e.Set(a.Var, value)
+				asked = append(asked, a.Var)
 			}
 		}
-	}
-	return r, nil
-}
-
-func askContainer(c *manifest.Container, e *env.File) ([]string, error) {
-	var asked []string
-	for _, a := range c.Asks {
-		if !a.Applies(e.Get(Visibility), e.Get) || e.Get(a.Var) != "" {
-			continue
-		}
-		value, err := ask(a)
-		if err != nil {
-			return asked, err
-		}
-		e.Set(a.Var, value)
-		asked = append(asked, a.Var)
-	}
-	if c.Postgres != nil && e.Get(c.Postgres.Password) == "" {
-		a := manifest.Ask{Var: c.Postgres.Password, Type: manifest.Generated, Prompt: fmt.Sprintf("Password of the %s user on Postgres", c.Postgres.Database)}
-		value, err := ask(a)
-		if err != nil {
-			return asked, err
-		}
-		e.Set(a.Var, value)
-		asked = append(asked, a.Var)
 	}
 	return asked, nil
 }
 
-func ask(a manifest.Ask) (string, error) {
+func Ask(a manifest.Ask) (string, error) {
 	title := a.Var
 	if a.Prompt != "" {
 		title += ": " + a.Prompt
@@ -140,7 +144,7 @@ func ask(a manifest.Ask) (string, error) {
 	case manifest.Choice:
 		var options []option
 		for _, o := range a.Options {
-			options = append(options, option{o, o})
+			options = append(options, option{label: o, value: o})
 		}
 		return selectOne(title, "", options)
 	case manifest.Generated:
