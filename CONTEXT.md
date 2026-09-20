@@ -123,9 +123,26 @@ Only on request, and only after naming it.
 _Avoid_: cleanup, purge, prune, delete
 
 **Access key**:
-A key pair that reaches one bucket and nothing else. Two buckets means two access keys,
-never shared.
+A key pair that reaches one bucket, or one secret store, and nothing else. Two buckets
+means two access keys, never shared, and fort's bucket and fort's master key are reached
+by two.
 _Avoid_: identity, IAM user, credentials, service account, token
+
+**Offer**:
+The interview proposing to make an external dependency for you on AWS, with admin
+credentials it uses once and never writes. Declining it prints the checklist.
+_Avoid_: auto-provisioning, create-it-for-me, wizard, setup
+
+**Checklist**:
+The steps to make an external dependency by hand at any provider, printed with your names
+filled in when you decline the offer. The README holds the long form.
+_Avoid_: manual path, instructions, guide, runbook
+
+**Adopt**:
+Reusing what already exists in your account, whether a bucket, a parameter or the AWS
+user an access key belongs to, instead of making a second one. The offer adopts and never
+overwrites.
+_Avoid_: reuse, import, attach, take over
 
 ## Postgres and ClickHouse
 
@@ -170,6 +187,11 @@ _Avoid_: connection URL, database URL, credentials
 The backup of one database, or of one listed file. One archive restores one database or
 one file alone.
 _Avoid_: dump, backup file, snapshot, copy
+
+**Retention**:
+How long archives stay in their bucket. A rule at your provider sets it, never userland,
+which can delete nothing from the dumps' bucket or fort's; without a rule they grow.
+_Avoid_: expiry, lifecycle (for the concept), cleanup, pruning
 
 **Globals**:
 The Postgres objects outside every database: the users and their passwords.

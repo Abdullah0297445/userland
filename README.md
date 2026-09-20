@@ -29,6 +29,15 @@ Two things are pointed at rather than run: an S3-compatible object store you bri
 the Postgres backup, Langfuse and fort each need a bucket of, and a secret store you own,
 which holds fort's master key.
 
+The interview offers to make each of those for you on AWS, with admin credentials it uses
+once and never writes, and it adopts what already exists in your account rather than making
+a second one. Decline, and it prints a checklist with your names filled in, for any
+S3-compatible provider. Each bucket is reached by an access key of its own. The Postgres
+dumps' and fort's may write and never delete, so a compromised host cannot erase its own
+archives; Langfuse's may delete, because its Data Retention feature does. Retention is
+yours: nothing in userland deletes from the dumps' bucket or fort's, so set a rule at your
+provider, or accept that they grow.
+
 Each application gets its own database on the shared Postgres, owned by a user of the same
 name. The backup discovers databases by reading the server rather than by being handed a
 list, so a database is backed up from the day it exists.
