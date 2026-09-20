@@ -6,6 +6,7 @@ import (
 	"os"
 	"regexp"
 	"sort"
+	"strings"
 )
 
 type Manifest struct {
@@ -17,15 +18,17 @@ type Product struct {
 }
 
 type Container struct {
-	Name     string    `json:"-"`
-	Product  string    `json:"-"`
-	Requires []string  `json:"requires"`
-	Optional []string  `json:"optional"`
-	HTTP     *HTTP     `json:"http"`
-	Postgres *Database `json:"postgres"`
-	Ports    []int     `json:"ports"`
-	Volumes  []string  `json:"volumes"`
-	Asks     []Ask     `json:"asks"`
+	Name     string            `json:"-"`
+	Product  string            `json:"-"`
+	Requires []string          `json:"requires"`
+	Optional []string          `json:"optional"`
+	HTTP     *HTTP             `json:"http"`
+	Postgres *Database         `json:"postgres"`
+	Ports    []int             `json:"ports"`
+	Volumes  []string          `json:"volumes"`
+	Asks     []Ask             `json:"asks"`
+	Renamed  map[string]string `json:"renamed"`
+	Removed  []string          `json:"removed"`
 }
 
 type HTTP struct {
@@ -48,7 +51,39 @@ type Ask struct {
 	Keep    bool     `json:"keep"`
 }
 
-var identifier = regexp.MustCompile(`^[a-z][a-z0-9_]{0,62}$`)
+const (
+	Text      = "text"
+	Hostname  = "hostname"
+	Email     = "email"
+	URL       = "url"
+	Port      = "port"
+	Secret    = "secret"
+	Generated = "generated"
+	Choice    = "choice"
+	Paths     = "paths"
+)
+
+var AskTypes = []string{Text, Hostname, Email, URL, Port, Secret, Generated, Choice, Paths}
+
+var (
+	identifier = regexp.MustCompile(`^[a-z][a-z0-9_]{0,62}$`)
+	variable   = regexp.MustCompile(`^[A-Z][A-Z0-9_]*$`)
+)
+
+func (a Ask) Applies(visibility string, value func(string) string) bool {
+	switch a.When {
+	case "":
+		return true
+	case "public", "local":
+		return a.When == visibility
+	}
+	name, want, _ := strings.Cut(a.When, "=")
+	return value(name) == want
+}
+
+func (a Ask) Hidden() bool {
+	return a.Type == Secret || a.Type == Generated
+}
 
 func Load(path string) (*Manifest, error) {
 	raw, err := os.ReadFile(path)
@@ -71,8 +106,16 @@ func Load(path string) (*Manifest, error) {
 			if c.HTTP != nil && c.HTTP.Subdomain == "" {
 				c.HTTP.Subdomain = name
 			}
-			if c.Postgres != nil && !identifier.MatchString(c.Postgres.Database) {
-				return nil, fmt.Errorf("manifest.json: database %q of %s is not a valid Postgres identifier", c.Postgres.Database, name)
+			if c.Postgres != nil {
+				if !identifier.MatchString(c.Postgres.Database) {
+					return nil, fmt.Errorf("manifest.json: database %q of %s is not a valid Postgres identifier", c.Postgres.Database, name)
+				}
+				if !variable.MatchString(c.Postgres.Password) {
+					return nil, fmt.Errorf("manifest.json: %s names its database password %q, which is not a variable name", name, c.Postgres.Password)
+				}
+			}
+			if err := c.checkAsks(); err != nil {
+				return nil, err
 			}
 		}
 	}
@@ -101,6 +144,34 @@ func Load(path string) (*Manifest, error) {
 		}
 	}
 	return &m, nil
+}
+
+func (c *Container) checkAsks() error {
+	for _, a := range c.Asks {
+		if !variable.MatchString(a.Var) {
+			return fmt.Errorf("manifest.json: %s asks %q, which is not a variable name", c.Name, a.Var)
+		}
+		if !contains(AskTypes, a.Type) {
+			return fmt.Errorf("manifest.json: %s asks %s with type %q; the types are %s", c.Name, a.Var, a.Type, strings.Join(AskTypes, " "))
+		}
+		if a.Type == Choice && len(a.Options) == 0 {
+			return fmt.Errorf("manifest.json: %s asks %s as a choice with no options", c.Name, a.Var)
+		}
+		if a.When != "" && a.When != "public" && a.When != "local" && !strings.Contains(a.When, "=") {
+			return fmt.Errorf("manifest.json: %s asks %s when %q, which is not public, local or VAR=value", c.Name, a.Var, a.When)
+		}
+	}
+	for old, now := range c.Renamed {
+		if !variable.MatchString(old) || !variable.MatchString(now) {
+			return fmt.Errorf("manifest.json: %s renames %q to %q; both must be variable names", c.Name, old, now)
+		}
+	}
+	for _, name := range c.Removed {
+		if !variable.MatchString(name) {
+			return fmt.Errorf("manifest.json: %s removes %q, which is not a variable name", c.Name, name)
+		}
+	}
+	return nil
 }
 
 func (m *Manifest) Container(name string) *Container {
@@ -136,6 +207,61 @@ func (m *Manifest) Names() []string {
 	return names
 }
 
+func (m *Manifest) ProductContainers(product string) []*Container {
+	var out []*Container
+	for _, c := range m.All() {
+		if c.Product == product {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+func (m *Manifest) ProductOrder() []string {
+	dependents := map[string]int{}
+	edges := map[string]map[string]bool{}
+	for name := range m.Products {
+		dependents[name] = 0
+		edges[name] = map[string]bool{}
+	}
+	for _, c := range m.All() {
+		for _, dep := range append(append([]string{}, c.Requires...), c.Optional...) {
+			target := m.Container(dep).Product
+			if target == c.Product || edges[c.Product][target] {
+				continue
+			}
+			edges[c.Product][target] = true
+			dependents[target]++
+		}
+	}
+	var order []string
+	for len(dependents) > 0 {
+		var ready []string
+		for name, n := range dependents {
+			if n == 0 {
+				ready = append(ready, name)
+			}
+		}
+		if len(ready) == 0 {
+			for name := range dependents {
+				ready = append(ready, name)
+			}
+			sort.Strings(ready)
+			return append(order, ready...)
+		}
+		sort.Strings(ready)
+		next := ready[0]
+		order = append(order, next)
+		delete(dependents, next)
+		for target := range edges[next] {
+			if _, waiting := dependents[target]; waiting {
+				dependents[target]--
+			}
+		}
+	}
+	return order
+}
+
 func (m *Manifest) Required() map[string]bool {
 	required := map[string]bool{}
 	for _, c := range m.All() {
@@ -149,10 +275,18 @@ func (m *Manifest) Required() map[string]bool {
 func (m *Manifest) Blocking(name string) []string {
 	var dependents []string
 	for _, c := range m.All() {
-		for _, r := range c.Requires {
-			if r == name {
-				dependents = append(dependents, c.Name)
-			}
+		if contains(c.Requires, name) {
+			dependents = append(dependents, c.Name)
+		}
+	}
+	return dependents
+}
+
+func (m *Manifest) OptionalFor(name string) []string {
+	var dependents []string
+	for _, c := range m.All() {
+		if contains(c.Optional, name) {
+			dependents = append(dependents, c.Name)
 		}
 	}
 	return dependents
@@ -200,4 +334,13 @@ func (m *Manifest) Validate(on []string) Verdict {
 		}
 	}
 	return v
+}
+
+func contains(list []string, item string) bool {
+	for _, x := range list {
+		if x == item {
+			return true
+		}
+	}
+	return false
 }

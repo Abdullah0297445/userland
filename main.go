@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -10,13 +11,15 @@ import (
 
 	"github.com/Abdullah0297445/userland/internal/check"
 	"github.com/Abdullah0297445/userland/internal/env"
+	"github.com/Abdullah0297445/userland/internal/interview"
 	"github.com/Abdullah0297445/userland/internal/manifest"
 	"github.com/Abdullah0297445/userland/internal/provision"
 	"github.com/Abdullah0297445/userland/internal/render"
 )
 
-const usage = `usage: userland VERB [ARGS]
+const usage = `usage: userland [VERB] [ARGS]
 
+  (no verb)              the interview: ask what is new, write .env, apply
   render                 write compose.yml from manifest.json, the templates and .env
   apply                  render, bring up, provision, print
   provision              converge the door auth and every switched-on database
@@ -25,11 +28,12 @@ const usage = `usage: userland VERB [ARGS]
   check [--write]        assert the manifest and templates hold; --write regenerates VARIABLES.md`
 
 func main() {
-	if len(os.Args) < 2 {
-		fail(usage)
-	}
 	root, err := findRoot()
 	must(err)
+	if len(os.Args) < 2 {
+		must(interviewThenApply(root))
+		return
+	}
 	verb, args := os.Args[1], os.Args[2:]
 	if verb == "check" {
 		write := len(args) == 1 && args[0] == "--write"
@@ -50,8 +54,9 @@ func main() {
 	must(err)
 	e, err := env.Read(filepath.Join(root, ".env"))
 	if err != nil {
-		fail(fmt.Sprintf("no .env at %s; write one with VISIBILITY, USERLAND_ON and the variables VARIABLES.md lists", root))
+		fail(fmt.Sprintf("no .env at %s; run ./bootstrap with no verb and the interview writes it", root))
 	}
+	must(migrate(m, e))
 	must(e.Require("VISIBILITY"))
 	switch verb {
 	case "render":
@@ -67,6 +72,59 @@ func main() {
 	default:
 		fail(usage)
 	}
+}
+
+func interviewThenApply(root string) error {
+	m, err := manifest.Load(filepath.Join(root, "manifest.json"))
+	if err != nil {
+		return err
+	}
+	path := filepath.Join(root, ".env")
+	e, err := env.Read(path)
+	if errors.Is(err, os.ErrNotExist) {
+		e = env.New(path)
+	} else if err != nil {
+		return err
+	}
+	if err := migrate(m, e); err != nil {
+		return err
+	}
+	result, err := interview.Run(m, e, os.Stdout)
+	var refusal interview.Refusal
+	if errors.As(err, &refusal) {
+		return fmt.Errorf("%w\nnothing was written; run ./bootstrap again and pick a selection that runs", err)
+	}
+	if err != nil {
+		return err
+	}
+	if result.Visibility != "" {
+		say("visibility: " + result.Visibility)
+	}
+	if len(result.Offered) > 0 {
+		say(fmt.Sprintf("switched on: %s", strings.Join(intersect(result.On, result.Offered), ", ")))
+		if off := intersect(result.Off, result.Offered); len(off) > 0 {
+			say(fmt.Sprintf("recorded as off: %s", strings.Join(off, ", ")))
+		}
+	}
+	if len(result.Asked) > 0 {
+		say(fmt.Sprintf("asked and written: %s", strings.Join(result.Asked, ", ")))
+	}
+	if !result.Changed() {
+		say("nothing new: every container is decided and every variable the selection needs is in .env")
+	}
+	if err := e.Write(); err != nil {
+		return err
+	}
+	return apply(m, e, root)
+}
+
+func migrate(m *manifest.Manifest, e *env.File) error {
+	moved := interview.Migrate(m, e)
+	if len(moved) == 0 {
+		return nil
+	}
+	say(moved...)
+	return e.Write()
 }
 
 func renderFile(m *manifest.Manifest, e *env.File, root string) error {
@@ -252,6 +310,16 @@ func contains(list []string, item string) bool {
 		}
 	}
 	return false
+}
+
+func intersect(list, keep []string) []string {
+	var out []string
+	for _, x := range list {
+		if contains(keep, x) {
+			out = append(out, x)
+		}
+	}
+	return out
 }
 
 func without(list, drop []string) []string {
