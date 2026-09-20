@@ -69,9 +69,9 @@ hostnames, TLS), chosen once for the whole of userland and never per container.
 _Avoid_: mode, environment, stage, dev/prod, exposure
 
 **Consumer**:
-A project of your own that uses userland and is not part of it. It may be a Postgres
-tenant and it may sit behind traefik; userland never runs it.
-_Avoid_: tenant (for the outside thing), client, app, application
+A project of your own that uses userland and is not part of it. It may have a database on
+Postgres and it may sit behind traefik; userland never runs it.
+_Avoid_: tenant, client, app, application
 
 **Contract**:
 Everything a consumer needs to use userland, and nothing about how userland runs.
@@ -112,7 +112,7 @@ The interview naming a selection that runs but is degraded, and proceeding.
 _Avoid_: notice, hint, caution
 
 **Provisioning**:
-Making what a selection depends on exist before it runs, whether roles, databases, buckets
+Making what a selection depends on exist before it runs, whether users, databases, buckets
 or access keys. What userland's own containers need converges on `.env`; what a consumer
 was given is never changed once it exists. A consumer is provisioned by the same path.
 _Avoid_: seeding, bootstrapping, init, setup, migration
@@ -127,52 +127,52 @@ A key pair that reaches one bucket and nothing else. Two buckets means two acces
 never shared.
 _Avoid_: identity, IAM user, credentials, service account, token
 
-## Postgres
+## Postgres and ClickHouse
 
-**Postgres tenant**:
-One role and one database on Postgres, shared by every container that connects as it. A
-tenant that serves customers of its own is still one tenant, and they are never tenants.
-Nothing on Redis or ClickHouse is a tenant; "tenant" alone means this, and only here.
-_Avoid_: user, account, owner, client, app
+**Database**:
+One database on Postgres or ClickHouse, made by provisioning for one product, or on
+Postgres for one consumer, and owned by a user of the same name. Every container that
+connects as that user shares it. A database that serves customers of its own is still one
+database. Nothing on Redis is a database in this sense; Redis isolates by number.
+_Avoid_: tenant, schema (for the whole thing), account, workspace
 
-**Tenant database**:
-The database Postgres holds for one tenant. The tenant's own role owns it.
-
-**Tenant role**:
-The one login role a tenant connects as. It owns its tenant database and reaches no other.
-_Avoid_: user, account
+**User**:
+The one login a database is reached through. It carries the database's name, owns it, and
+reaches no other database. Postgres calls a user that can log in a role; here it is a user.
+_Avoid_: tenant, role (for this), account, owner (as its name)
 
 **Superuser**:
-The single Postgres superuser that provisions tenants and runs the backup. No tenant
+The single Postgres superuser that provisions databases and runs the backup. No other user
 holds it.
 _Avoid_: engine superuser, admin, root, postgres user
 
 **Door**:
-The container a tenant connects through to reach Postgres. There are two, they differ only
-in how long a tenant may hold a connection, and the DSN names one. A tenant's containers are
-blocked by the door their DSN names. pgadmin is not a door.
+The container a connection to Postgres goes through. There are two, they differ only in how
+long a connection may be held, and the DSN names one. A container is blocked by the door
+its DSN names. pgadmin is not a door.
 _Avoid_: pooler, pgbouncer (as the concept), endpoint, entrypoint
 
 **Transaction door**:
-The door for a tenant that keeps no state on the connection between transactions. It is
-the default, and it lets many tenant connections share few Postgres connections.
+The door for a container that keeps no state on the connection between transactions. It is
+the default, and it lets many client connections share few Postgres connections.
 
 **Session door**:
-The door for a tenant that keeps state on the connection. It holds one Postgres connection
-for as long as the tenant holds its own, so a tenant on this door must release promptly.
+The door for a container that keeps state on the connection. It holds one Postgres
+connection for as long as the container holds its own, so a container on this door must
+release promptly.
 
 **DSN**:
-The connection string userland hands a tenant. It is part of the contract, and it names a
-door.
+The connection string userland hands a consumer, or writes for a container. It is part of
+the contract, and it names a door.
 _Avoid_: connection URL, database URL, credentials
 
 **Archive**:
-The backup of one tenant database, or of one listed file. One archive restores one tenant
-or one file alone.
+The backup of one database, or of one listed file. One archive restores one database or
+one file alone.
 _Avoid_: dump, backup file, snapshot, copy
 
 **Globals**:
-The Postgres objects outside every tenant database: the tenant roles and their passwords.
+The Postgres objects outside every database: the users and their passwords.
 One backup holds them for the whole of Postgres. It is as sensitive as the data, and it
 goes only into a Postgres being rebuilt.
 _Avoid_: users, roles file, cluster objects
@@ -182,9 +182,9 @@ A rehearsal of a recovery, against a throwaway, to prove that the recovery works
 that no drill has restored is not a backup.
 _Avoid_: test, dry run
 
-### Roles inside a tenant database, for PostgREST
+### Roles inside a database, for PostgREST
 
-These exist only in a tenant database that wants a REST API. PostgREST is not a userland
+These exist only in a database that wants a REST API. PostgREST is not a userland
 container; it runs in the consumer's own repo.
 
 **Authenticator**:

@@ -29,8 +29,8 @@ func Variables(m *manifest.Manifest, bodies []body) string {
 		for _, a := range c.Asks {
 			asked[a.Var] = true
 		}
-		if c.Tenant != nil {
-			asked[c.Tenant.Password] = true
+		if c.Postgres != nil {
+			asked[c.Postgres.Password] = true
 		}
 	}
 	defaults := map[string]map[string]string{}
@@ -68,8 +68,8 @@ func Variables(m *manifest.Manifest, bodies []body) string {
 			}
 			rows = append(rows, row{a.Var, kind, when, keep, a.Prompt})
 		}
-		if c.Tenant != nil {
-			rows = append(rows, row{c.Tenant.Password, "generated", "always", "", fmt.Sprintf("Password of the `%s` tenant role. Provisioning converges the role to whatever this holds.", c.Tenant.Name)})
+		if c.Postgres != nil {
+			rows = append(rows, row{c.Postgres.Password, "generated", "always", "", fmt.Sprintf("Password of the `%s` user on Postgres, which owns the `%s` database. Provisioning converges it to whatever this holds.", c.Postgres.Database, c.Postgres.Database)})
 		}
 		var optional []row
 		if c.HTTP != nil {

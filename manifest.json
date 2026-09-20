@@ -22,7 +22,7 @@
           "volumes": ["postgres_data"],
           "asks": [
             {"var": "POSTGRES_PASSWORD", "type": "generated", "prompt": "Password of the Postgres superuser"},
-            {"var": "PGBOUNCER_AUTH_PASSWORD", "type": "generated", "prompt": "Password of the role the doors look tenants up with"}
+            {"var": "PGBOUNCER_AUTH_PASSWORD", "type": "generated", "prompt": "Password of the user the doors look passwords up with"}
           ]
         },
         "pgbouncer-transaction": {
@@ -39,7 +39,7 @@
           "requires": ["pgbouncer-transaction"],
           "optional": ["traefik"],
           "http": {"container": 3000, "host": 3000, "subdomain": "metabase"},
-          "tenant": {"name": "metabase", "password": "METABASE_DB_PASSWORD"},
+          "postgres": {"database": "metabase", "password": "METABASE_DB_PASSWORD"},
           "volumes": ["metabase_plugins"],
           "asks": [
             {"var": "MB_ENCRYPTION_SECRET_KEY", "type": "generated", "prompt": "Key metabase encrypts saved data-source credentials with", "keep": true}

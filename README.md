@@ -29,9 +29,9 @@ Two things are pointed at rather than run: an S3-compatible object store you bri
 the Postgres backup, Langfuse and fort each need a bucket of, and a secret store you own,
 which holds fort's master key.
 
-Each application is a Postgres tenant — its own role and database on the shared Postgres.
-The backup discovers databases by reading the server rather than by being handed a list, so
-a tenant is backed up from the day it exists.
+Each application gets its own database on the shared Postgres, owned by a user of the same
+name. The backup discovers databases by reading the server rather than by being handed a
+list, so a database is backed up from the day it exists.
 
 ## The shape
 
@@ -81,7 +81,7 @@ file, and will never re-ask what is already there.
 | `./bootstrap on CONTAINER…` | Switch containers on, then apply. |
 | `./bootstrap off CONTAINER…` | Switch containers off, then apply. Refuses while a container is blocking another, naming the dependents. Prints what it left behind. |
 | `./bootstrap render` | Write `compose.yml` and stop. |
-| `./bootstrap provision` | Converge the door's auth role and every switched-on tenant, and nothing else. |
+| `./bootstrap provision` | Converge the door's auth user and every switched-on database, and nothing else. |
 | `./bootstrap check [--write]` | Assert the manifest and templates hold. `--write` regenerates `VARIABLES.md`. |
 
 ### What apply does
@@ -103,12 +103,12 @@ published ports change. That is expected and loses nothing.
 
 Provisioning converges on `.env`. Every run, through `docker exec postgres-18 psql`:
 
-- The role the doors look tenants up with, `pgbouncer_auth`, and its `SECURITY DEFINER`
+- The user the doors look passwords up with, `pgbouncer_auth`, and its `SECURITY DEFINER`
   lookup function in the `postgres` database.
-- Each switched-on tenant: its role, its database with `CONNECT` revoked from everyone
-  else and `CREATE` on `public` revoked, and the `vector` extension.
+- Each switched-on container's database: its user, the database with `CONNECT` revoked
+  from everyone else and `CREATE` on `public` revoked, and the `vector` extension.
 
-A password is compared with the role's stored SCRAM verifier and changed only when they
+A password is compared with the user's stored SCRAM verifier and changed only when they
 differ, so a re-run changes nothing, a hand-edited or restored `.env` heals itself, and
 rotating a password is one edit plus an apply. Passwords travel on stdin, never on a
 command line. Nothing is ever dropped.
@@ -122,7 +122,7 @@ command line. Nothing is ever dropped.
 - no template writes a key the generator owns, and every template's `environment` opens
   with the merge line that carries `TZ=UTC`;
 - every variable a template reads without a default is asked by the manifest or is a
-  tenant password;
+  database password;
 - `VARIABLES.md` matches the manifest and templates;
 - compose accepts the rendered file;
 - `TZ=UTC` reaches every service;
@@ -164,7 +164,7 @@ product's `compose/<product>.yml`. `check` tells you what is missing.
 |---|---|
 | `requires` / `optional` | Containers this one depends on. A missing required one is a refusal; a missing optional one is a warning. `depends_on` is emitted from `requires`, with `condition: service_healthy`. |
 | `http` | `container` port, `host` loopback port, and `subdomain` (defaults to the name). Drives the traefik labels and the `ports` block. |
-| `tenant` | The Postgres tenant `name` and the `.env` variable holding its `password`. Two containers naming one tenant share it. A tenant implies `postgres-18` is on. |
+| `postgres` | The `database` this container gets on Postgres, which is also its user's name, and the `.env` variable holding its `password`. Two containers naming one database share it. It implies `postgres-18` is on. |
 | `ports` | Ports published on every interface. traefik alone. |
 | `volumes` | Named volumes this container mounts. The top-level `volumes` block, "left behind" and `reclaim` all read this. |
 | `asks` | `var`, `type`, `prompt`, optional `when` (`public`, `local` or `VAR=value`) and `keep`. Types: `text hostname email url port secret generated choice`. |
@@ -177,21 +177,21 @@ product's `compose/<product>.yml`. `check` tells you what is missing.
 - `environment` opens with `<<: *userland-environment`. That merge line is how `TZ=UTC`
   reaches every container from one anchor the generator emits.
 - The template reads the manifest rather than repeating it: `.Name`, `.Product`,
-  `.Visibility`, `.Tenant` and `.HTTP` are in scope, and `{{ ref "VAR" }}` renders
+  `.Visibility`, `.Postgres` and `.HTTP` are in scope, and `{{ ref "VAR" }}` renders
   `${VAR}`. Never write a value where a reference will do.
 - A container anything requires needs a healthcheck. Postgres's must probe over TCP:
   over the socket it is green while the image's temporary first-start server is up.
 - A named volume is both a line under `volumes` in the manifest and a mount in the
   template.
-- A variable read without a default is asked in the manifest or is a tenant password;
+- A variable read without a default is asked in the manifest or is a database password;
   one with a default, `${VAR:-value}`, is optional and lands in `VARIABLES.md` by itself.
 
 ### Names the CLI knows
 
 Three names are kinds the CLI defines rather than manifest data: `traefik`, whose
 presence decides labels and loopback ports; `postgres-18`, which provisioning execs into
-and which every tenant requires; and `pgbouncer_auth`, the role both doors look tenants
-up with.
+and which every container with a database requires; and `pgbouncer_auth`, the user both
+doors look passwords up with.
 
 ## Notes
 

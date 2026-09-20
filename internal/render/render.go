@@ -35,7 +35,7 @@ type data struct {
 	Name       string
 	Product    string
 	Visibility string
-	Tenant     *manifest.Tenant
+	Postgres   *manifest.Database
 	HTTP       *manifest.HTTP
 }
 
@@ -68,7 +68,7 @@ func (t *Templates) Body(c *manifest.Container, visibility string) (string, erro
 		return "", fmt.Errorf("compose/%s.yml defines no template %q", c.Product, c.Name)
 	}
 	var body bytes.Buffer
-	if err := t.set.ExecuteTemplate(&body, c.Name, data{c.Name, c.Product, visibility, c.Tenant, c.HTTP}); err != nil {
+	if err := t.set.ExecuteTemplate(&body, c.Name, data{c.Name, c.Product, visibility, c.Postgres, c.HTTP}); err != nil {
 		return "", err
 	}
 	var lines []string

@@ -5,9 +5,9 @@ environment:
   MB_DB_TYPE: postgres
   MB_DB_HOST: pgbouncer-transaction
   MB_DB_PORT: 5432
-  MB_DB_DBNAME: {{ .Tenant.Name }}
-  MB_DB_USER: {{ .Tenant.Name }}
-  MB_DB_PASS: {{ ref .Tenant.Password }}
+  MB_DB_DBNAME: {{ .Postgres.Database }}
+  MB_DB_USER: {{ .Postgres.Database }}
+  MB_DB_PASS: {{ ref .Postgres.Password }}
   MB_ENCRYPTION_SECRET_KEY: ${MB_ENCRYPTION_SECRET_KEY}
   MB_AGGREGATED_QUERY_ROW_LIMIT: ${MB_AGGREGATED_QUERY_ROW_LIMIT:-10000}
   MB_UNAGGREGATED_QUERY_ROW_LIMIT: ${MB_UNAGGREGATED_QUERY_ROW_LIMIT:-2000}

@@ -19,7 +19,7 @@ An asked variable is collected by the interview when its container is switched o
 | Variable | Kind | When | Keep | Meaning |
 |---|---|---|---|---|
 | `MB_ENCRYPTION_SECRET_KEY` | generated | always | yes | Key metabase encrypts saved data-source credentials with |
-| `METABASE_DB_PASSWORD` | generated | always |  | Password of the `metabase` tenant role. Provisioning converges the role to whatever this holds. |
+| `METABASE_DB_PASSWORD` | generated | always |  | Password of the `metabase` user on Postgres, which owns the `metabase` database. Provisioning converges it to whatever this holds. |
 | `METABASE_PORT` | optional |  |  | Loopback port to publish on while traefik is on; nothing is published unless it is set. With traefik off the container publishes on `127.0.0.1:3000` regardless. |
 | `METABASE_MEM_LIMIT` | optional |  |  | Memory limit in compose's units, such as `2g`. Unbounded unless set. |
 | `MB_AGGREGATED_QUERY_ROW_LIMIT` | optional |  |  | Read by the template; defaults to `10000`. |
@@ -44,7 +44,7 @@ An asked variable is collected by the interview when its container is switched o
 | Variable | Kind | When | Keep | Meaning |
 |---|---|---|---|---|
 | `POSTGRES_PASSWORD` | generated | always |  | Password of the Postgres superuser |
-| `PGBOUNCER_AUTH_PASSWORD` | generated | always |  | Password of the role the doors look tenants up with |
+| `PGBOUNCER_AUTH_PASSWORD` | generated | always |  | Password of the user the doors look passwords up with |
 | `POSTGRES_18_MEM_LIMIT` | optional |  |  | Memory limit in compose's units, such as `2g`. Unbounded unless set. |
 
 ## traefik

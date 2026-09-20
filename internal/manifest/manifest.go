@@ -17,15 +17,15 @@ type Product struct {
 }
 
 type Container struct {
-	Name     string   `json:"-"`
-	Product  string   `json:"-"`
-	Requires []string `json:"requires"`
-	Optional []string `json:"optional"`
-	HTTP     *HTTP    `json:"http"`
-	Tenant   *Tenant  `json:"tenant"`
-	Ports    []int    `json:"ports"`
-	Volumes  []string `json:"volumes"`
-	Asks     []Ask    `json:"asks"`
+	Name     string    `json:"-"`
+	Product  string    `json:"-"`
+	Requires []string  `json:"requires"`
+	Optional []string  `json:"optional"`
+	HTTP     *HTTP     `json:"http"`
+	Postgres *Database `json:"postgres"`
+	Ports    []int     `json:"ports"`
+	Volumes  []string  `json:"volumes"`
+	Asks     []Ask     `json:"asks"`
 }
 
 type HTTP struct {
@@ -34,8 +34,8 @@ type HTTP struct {
 	Subdomain string `json:"subdomain"`
 }
 
-type Tenant struct {
-	Name     string `json:"name"`
+type Database struct {
+	Database string `json:"database"`
 	Password string `json:"password"`
 }
 
@@ -71,8 +71,8 @@ func Load(path string) (*Manifest, error) {
 			if c.HTTP != nil && c.HTTP.Subdomain == "" {
 				c.HTTP.Subdomain = name
 			}
-			if c.Tenant != nil && !identifier.MatchString(c.Tenant.Name) {
-				return nil, fmt.Errorf("manifest.json: tenant %q of %s is not a valid Postgres identifier", c.Tenant.Name, name)
+			if c.Postgres != nil && !identifier.MatchString(c.Postgres.Database) {
+				return nil, fmt.Errorf("manifest.json: database %q of %s is not a valid Postgres identifier", c.Postgres.Database, name)
 			}
 		}
 	}
@@ -186,8 +186,8 @@ func (m *Manifest) Validate(on []string) Verdict {
 				v.Refusals = append(v.Refusals, fmt.Sprintf("%s is blocked by %s, which is off", c.Name, r))
 			}
 		}
-		if c.Tenant != nil && !set[Postgres] {
-			v.Refusals = append(v.Refusals, fmt.Sprintf("%s is a Postgres tenant, so %s must be on", c.Name, Postgres))
+		if c.Postgres != nil && !set[Postgres] {
+			v.Refusals = append(v.Refusals, fmt.Sprintf("%s has a database on Postgres, so %s must be on", c.Name, Postgres))
 		}
 		for _, o := range c.Optional {
 			if !set[o] {

@@ -151,8 +151,8 @@ func checkReferences(r *Report, m *manifest.Manifest, bodies []body) {
 		for _, a := range c.Asks {
 			known[a.Var] = true
 		}
-		if c.Tenant != nil {
-			known[c.Tenant.Password] = true
+		if c.Postgres != nil {
+			known[c.Postgres.Password] = true
 		}
 	}
 	clean := true
@@ -165,7 +165,7 @@ func checkReferences(r *Report, m *manifest.Manifest, bodies []body) {
 		}
 	}
 	if clean {
-		r.pass("every variable a template reads without a default is asked or is a tenant password")
+		r.pass("every variable a template reads without a default is asked or is a database password")
 	}
 }
 

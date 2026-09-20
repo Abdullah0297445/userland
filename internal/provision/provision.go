@@ -16,7 +16,7 @@ import (
 
 const (
 	server       = manifest.Postgres
-	AuthRole     = "pgbouncer_auth"
+	AuthUser     = "pgbouncer_auth"
 	AuthPassword = "PGBOUNCER_AUTH_PASSWORD"
 	authFunction = "pgbouncer_get_auth"
 )
@@ -27,16 +27,16 @@ func Door(e *env.File) ([]string, error) {
 	if password == "" {
 		return did, fmt.Errorf("door auth: .env lacks %s", AuthPassword)
 	}
-	role, err := query("postgres", "SELECT 1 FROM pg_roles WHERE rolname = "+literal(AuthRole))
+	role, err := query("postgres", "SELECT 1 FROM pg_roles WHERE rolname = "+literal(AuthUser))
 	if err != nil {
 		return did, err
 	}
 	if role != "1" {
-		sql := fmt.Sprintf("CREATE ROLE %s LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION PASSWORD %s", ident(AuthRole), literal(password))
+		sql := fmt.Sprintf("CREATE ROLE %s LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION PASSWORD %s", ident(AuthUser), literal(password))
 		if err := run("postgres", sql); err != nil {
 			return did, err
 		}
-		did = append(did, "created role "+AuthRole)
+		did = append(did, "created user "+AuthUser)
 	}
 	function, err := query("postgres", "SELECT 1 FROM pg_proc WHERE proname = "+literal(authFunction)+" AND pronamespace = 'public'::regnamespace")
 	if err != nil {
@@ -45,7 +45,7 @@ func Door(e *env.File) ([]string, error) {
 	definition := strings.Join([]string{
 		fmt.Sprintf("CREATE OR REPLACE FUNCTION public.%s(p_usename TEXT) RETURNS TABLE(usename TEXT, passwd TEXT) LANGUAGE sql SECURITY DEFINER SET search_path = pg_catalog AS $$ SELECT usename::TEXT, passwd::TEXT FROM pg_catalog.pg_shadow WHERE usename = p_usename; $$", authFunction),
 		fmt.Sprintf("REVOKE EXECUTE ON FUNCTION public.%s(TEXT) FROM PUBLIC", authFunction),
-		fmt.Sprintf("GRANT EXECUTE ON FUNCTION public.%s(TEXT) TO %s", authFunction, ident(AuthRole)),
+		fmt.Sprintf("GRANT EXECUTE ON FUNCTION public.%s(TEXT) TO %s", authFunction, ident(AuthUser)),
 	}, ";\n")
 	if err := run("postgres", definition); err != nil {
 		return did, err
@@ -53,15 +53,15 @@ func Door(e *env.File) ([]string, error) {
 	if function != "1" {
 		did = append(did, "created function "+authFunction)
 	}
-	matches, err := verifierMatches(AuthRole, password)
+	matches, err := verifierMatches(AuthUser, password)
 	if err != nil {
 		return did, err
 	}
 	if !matches {
-		if err := run("postgres", fmt.Sprintf("ALTER ROLE %s PASSWORD %s", ident(AuthRole), literal(password))); err != nil {
+		if err := run("postgres", fmt.Sprintf("ALTER ROLE %s PASSWORD %s", ident(AuthUser), literal(password))); err != nil {
 			return did, err
 		}
-		did = append(did, "set the password of "+AuthRole+" from .env")
+		did = append(did, "set the password of "+AuthUser+" from .env")
 	}
 	if len(did) == 0 {
 		did = append(did, "door auth unchanged")
@@ -69,7 +69,7 @@ func Door(e *env.File) ([]string, error) {
 	return did, nil
 }
 
-func Tenants(m *manifest.Manifest, on []string, e *env.File) ([]string, error) {
+func Databases(m *manifest.Manifest, on []string, e *env.File) ([]string, error) {
 	set := map[string]bool{}
 	for _, name := range on {
 		set[name] = true
@@ -77,15 +77,15 @@ func Tenants(m *manifest.Manifest, on []string, e *env.File) ([]string, error) {
 	seen := map[string]bool{}
 	var report []string
 	for _, c := range m.All() {
-		if !set[c.Name] || c.Tenant == nil || seen[c.Tenant.Name] {
+		if !set[c.Name] || c.Postgres == nil || seen[c.Postgres.Database] {
 			continue
 		}
-		seen[c.Tenant.Name] = true
-		password := e.Get(c.Tenant.Password)
+		seen[c.Postgres.Database] = true
+		password := e.Get(c.Postgres.Password)
 		if password == "" {
-			return report, fmt.Errorf("tenant %s: .env lacks %s", c.Tenant.Name, c.Tenant.Password)
+			return report, fmt.Errorf("database %s: .env lacks %s", c.Postgres.Database, c.Postgres.Password)
 		}
-		steps, err := converge(c.Tenant.Name, password)
+		steps, err := converge(c.Postgres.Database, password)
 		report = append(report, steps...)
 		if err != nil {
 			return report, err
@@ -104,7 +104,7 @@ func converge(name, password string) ([]string, error) {
 		if err := run("postgres", fmt.Sprintf("CREATE ROLE %s LOGIN PASSWORD %s", ident(name), literal(password))); err != nil {
 			return did, err
 		}
-		did = append(did, "created role "+name)
+		did = append(did, "created user "+name)
 	}
 	db, err := query("postgres", "SELECT 1 FROM pg_database WHERE datname = "+literal(name))
 	if err != nil {
@@ -134,7 +134,7 @@ func converge(name, password string) ([]string, error) {
 		did = append(did, "set the password of "+name+" from .env")
 	}
 	if len(did) == 0 {
-		did = append(did, "tenant "+name+" unchanged")
+		did = append(did, "database "+name+" unchanged")
 	}
 	return did, nil
 }

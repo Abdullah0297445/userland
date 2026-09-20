@@ -19,7 +19,7 @@ const usage = `usage: userland VERB [ARGS]
 
   render                 write compose.yml from manifest.json, the templates and .env
   apply                  render, bring up, provision, print
-  provision              converge the door auth and every switched-on tenant
+  provision              converge the door auth and every switched-on database
   on CONTAINER...        switch containers on, then apply
   off CONTAINER...       switch containers off, then apply
   check [--write]        assert the manifest and templates hold; --write regenerates VARIABLES.md`
@@ -118,7 +118,7 @@ func provisionAll(m *manifest.Manifest, e *env.File) error {
 	if err != nil {
 		return err
 	}
-	report, err = provision.Tenants(m, e.List("USERLAND_ON"), e)
+	report, err = provision.Databases(m, e.List("USERLAND_ON"), e)
 	say(report...)
 	return err
 }
@@ -176,15 +176,15 @@ func leftBehind(m *manifest.Manifest, on []string, c *manifest.Container) {
 	for _, v := range c.Volumes {
 		kept = append(kept, "volume "+v)
 	}
-	if c.Tenant != nil {
+	if c.Postgres != nil {
 		shared := false
 		for _, other := range m.All() {
-			if other.Name != c.Name && other.Tenant != nil && other.Tenant.Name == c.Tenant.Name && contains(on, other.Name) {
+			if other.Name != c.Name && other.Postgres != nil && other.Postgres.Database == c.Postgres.Database && contains(on, other.Name) {
 				shared = true
 			}
 		}
 		if !shared {
-			kept = append(kept, "database "+c.Tenant.Name)
+			kept = append(kept, "database "+c.Postgres.Database)
 		}
 	}
 	if len(kept) > 0 {
