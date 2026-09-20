@@ -205,5 +205,8 @@ doors look passwords up with.
   regenerated, and losing them loses the data. The CLI names those lines when it finishes;
   copy them somewhere before anything runs, or switch on fort and it keeps `.env` for
   you, under a master key that lives in a secret store you own.
+- **Postgres and the doors run at their images' defaults.** No pool size, connection
+  ceiling or memory setting is written anywhere in this repo, beyond the two doors'
+  client ceiling. Measure first; a number guessed in advance is worse than none.
 
 See [CONTEXT.md](CONTEXT.md) for the language this repo uses.
