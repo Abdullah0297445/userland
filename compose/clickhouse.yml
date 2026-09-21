@@ -1,0 +1,19 @@
+{{ define "clickhouse" -}}
+image: clickhouse/clickhouse-server:26.8
+environment:
+  <<: *userland-environment
+  CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+  CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+ulimits:
+  nofile:
+    soft: 262144
+    hard: 262144
+volumes:
+  - clickhouse_data:/var/lib/clickhouse
+healthcheck:
+  test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:8123/ping"]
+  interval: 10s
+  timeout: 5s
+  retries: 5
+  start_period: 30s
+{{ end }}

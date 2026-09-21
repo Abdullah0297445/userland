@@ -3,6 +3,7 @@ package manifest
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"regexp"
 	"sort"
@@ -18,17 +19,19 @@ type Product struct {
 }
 
 type Container struct {
-	Name     string            `json:"-"`
-	Product  string            `json:"-"`
-	Requires []string          `json:"requires"`
-	Optional []string          `json:"optional"`
-	HTTP     *HTTP             `json:"http"`
-	Postgres *Database         `json:"postgres"`
-	Ports    []int             `json:"ports"`
-	Volumes  []string          `json:"volumes"`
-	Asks     []Ask             `json:"asks"`
-	Renamed  map[string]string `json:"renamed"`
-	Removed  []string          `json:"removed"`
+	Name       string               `json:"-"`
+	Product    string               `json:"-"`
+	Requires   []string             `json:"requires"`
+	Optional   []string             `json:"optional"`
+	HTTP       *HTTP                `json:"http"`
+	Postgres   *Database            `json:"postgres"`
+	ClickHouse *Database            `json:"clickhouse"`
+	Ports      []int                `json:"ports"`
+	Volumes    []string             `json:"volumes"`
+	Asks       []Ask                `json:"asks"`
+	External   map[string]*External `json:"external"`
+	Renamed    map[string]string    `json:"renamed"`
+	Removed    []string             `json:"removed"`
 }
 
 type HTTP struct {
@@ -38,8 +41,9 @@ type HTTP struct {
 }
 
 type Database struct {
-	Database string `json:"database"`
-	Password string `json:"password"`
+	Database string            `json:"database"`
+	Password string            `json:"password"`
+	Settings map[string]string `json:"settings"`
 }
 
 type Ask struct {
@@ -69,6 +73,7 @@ var (
 	identifierPattern = regexp.MustCompile(`^[a-z][a-z0-9_]{0,62}$`)
 	variablePattern   = regexp.MustCompile(`^[A-Z][A-Z0-9_]*$`)
 	namePattern       = regexp.MustCompile(`^[a-z][a-z0-9-]{0,62}$`)
+	settingPattern    = regexp.MustCompile(`^[a-z_][a-z0-9_]*(\.[a-z_][a-z0-9_]*)?$`)
 )
 
 func ValidIdentifier(s string) bool { return identifierPattern.MatchString(s) }
@@ -76,6 +81,8 @@ func ValidIdentifier(s string) bool { return identifierPattern.MatchString(s) }
 func ValidVariable(s string) bool { return variablePattern.MatchString(s) }
 
 func ValidName(s string) bool { return namePattern.MatchString(s) }
+
+func ValidSetting(s string) bool { return settingPattern.MatchString(s) }
 
 func (a Ask) Applies(visibility string, value func(string) string) bool {
 	switch a.When {
@@ -135,15 +142,68 @@ func Parse(raw []byte) (*Manifest, error) {
 				if !ValidVariable(c.Postgres.Password) {
 					return nil, fmt.Errorf("manifest.json: %s names its database password %q, which is not a variable name", name, c.Postgres.Password)
 				}
+				for setting, value := range c.Postgres.Settings {
+					if !ValidSetting(setting) {
+						return nil, fmt.Errorf("manifest.json: %s sets %q on its Postgres user, which is not a setting name", name, setting)
+					}
+					if value == "" {
+						return nil, fmt.Errorf("manifest.json: %s sets %s on its Postgres user to nothing", name, setting)
+					}
+				}
+			}
+			if c.ClickHouse != nil {
+				if !ValidIdentifier(c.ClickHouse.Database) {
+					return nil, fmt.Errorf("manifest.json: database %q of %s is not a valid ClickHouse identifier", c.ClickHouse.Database, name)
+				}
+				if !ValidVariable(c.ClickHouse.Password) {
+					return nil, fmt.Errorf("manifest.json: %s names its ClickHouse password %q, which is not a variable name", name, c.ClickHouse.Password)
+				}
+				if len(c.ClickHouse.Settings) > 0 {
+					return nil, fmt.Errorf("manifest.json: %s sets settings on its ClickHouse user; settings are Postgres's", name)
+				}
+				if c.Postgres != nil && c.Postgres.Password == c.ClickHouse.Password {
+					return nil, fmt.Errorf("manifest.json: %s names %s as both its Postgres and its ClickHouse password", name, c.Postgres.Password)
+				}
 			}
 			if err := c.checkAsks(); err != nil {
 				return nil, err
+			}
+			for _, prefix := range c.Externals() {
+				if err := c.External[prefix].check(name, prefix); err != nil {
+					return nil, err
+				}
 			}
 		}
 	}
 	volumes := map[string]string{}
 	hostPorts := map[int]string{}
+	databases := map[string]*Container{}
+	externals := map[string]*Container{}
+	explicit := map[string]string{}
 	for _, c := range m.All() {
+		for _, a := range c.Asks {
+			explicit[a.Var] = c.Name
+		}
+	}
+	for _, c := range m.All() {
+		for _, prefix := range c.Externals() {
+			x := c.External[prefix]
+			if other, shared := externals[prefix]; shared && *other.External[prefix] != *x {
+				return nil, fmt.Errorf("manifest.json: %s and %s share the external dependency %s but describe it differently", other.Name, c.Name, prefix)
+			}
+			externals[prefix] = c
+			for _, v := range x.Variables(prefix) {
+				if asker, taken := explicit[v]; taken {
+					return nil, fmt.Errorf("manifest.json: %s asks %s, which %s's %s supplies", asker, v, c.Name, prefix)
+				}
+			}
+		}
+		if c.Postgres != nil {
+			if other, shared := databases[c.Postgres.Database]; shared && !maps.Equal(other.Postgres.Settings, c.Postgres.Settings) {
+				return nil, fmt.Errorf("manifest.json: %s and %s share the database %s but set different settings on its user", other.Name, c.Name, c.Postgres.Database)
+			}
+			databases[c.Postgres.Database] = c
+		}
 		for _, dep := range append(append([]string{}, c.Requires...), c.Optional...) {
 			if m.Container(dep) == nil {
 				return nil, fmt.Errorf("manifest.json: %s depends on %q, which no product has", c.Name, dep)
@@ -196,19 +256,19 @@ func (c *Container) checkAsks() error {
 	return nil
 }
 
-func (c *Container) PasswordAsk() (Ask, bool) {
-	if c.Postgres == nil {
-		return Ask{}, false
+func (c *Container) PasswordAsks() []Ask {
+	var asks []Ask
+	if c.Postgres != nil {
+		asks = append(asks, Ask{Var: c.Postgres.Password, Type: Generated, Prompt: fmt.Sprintf("Password of the %s user on Postgres", c.Postgres.Database)})
 	}
-	return Ask{Var: c.Postgres.Password, Type: Generated, Prompt: fmt.Sprintf("Password of the %s user on Postgres", c.Postgres.Database)}, true
+	if c.ClickHouse != nil {
+		asks = append(asks, Ask{Var: c.ClickHouse.Password, Type: Generated, Prompt: fmt.Sprintf("Password of the %s user on ClickHouse", c.ClickHouse.Database)})
+	}
+	return asks
 }
 
 func (c *Container) AllAsks() []Ask {
-	asks := append([]Ask{}, c.Asks...)
-	if a, ok := c.PasswordAsk(); ok {
-		asks = append(asks, a)
-	}
-	return asks
+	return append(append(append([]Ask{}, c.Asks...), c.PasswordAsks()...), c.ExternalAsks()...)
 }
 
 func (m *Manifest) Container(name string) *Container {
@@ -230,11 +290,21 @@ func (m *Manifest) Database(database string) *Container {
 }
 
 func (m *Manifest) SharesDatabase(c *Container, on []string) bool {
-	if c.Postgres == nil {
+	return m.shares(c, on, func(x *Container) *Database { return x.Postgres })
+}
+
+func (m *Manifest) SharesClickHouse(c *Container, on []string) bool {
+	return m.shares(c, on, func(x *Container) *Database { return x.ClickHouse })
+}
+
+func (m *Manifest) shares(c *Container, on []string, of func(*Container) *Database) bool {
+	mine := of(c)
+	if mine == nil {
 		return false
 	}
 	for _, other := range m.All() {
-		if other.Name != c.Name && other.Postgres != nil && other.Postgres.Database == c.Postgres.Database && contains(on, other.Name) {
+		theirs := of(other)
+		if other.Name != c.Name && theirs != nil && theirs.Database == mine.Database && contains(on, other.Name) {
 			return true
 		}
 	}
@@ -391,6 +461,9 @@ func (m *Manifest) Validate(on []string) Verdict {
 		}
 		if c.Postgres != nil && !set[Postgres] {
 			v.Refusals = append(v.Refusals, fmt.Sprintf("%s has a database on Postgres, so %s must be on", c.Name, Postgres))
+		}
+		if c.ClickHouse != nil && !set[ClickHouse] {
+			v.Refusals = append(v.Refusals, fmt.Sprintf("%s has a database on ClickHouse, so %s must be on", c.Name, ClickHouse))
 		}
 		for _, o := range c.Optional {
 			if !set[o] {

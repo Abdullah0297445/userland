@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/Abdullah0297445/userland/internal/env"
@@ -95,13 +96,85 @@ func TestLabelNamesWhoNeedsIt(t *testing.T) {
 		got[c.Name] = label(m, c)
 	}
 	want := map[string]string{
+		"clickhouse":            "clickhouse",
 		"metabase":              "metabase",
+		"n8n":                   "n8n: required by n8n-runners",
+		"n8n-runners":           "n8n-runners: optional for n8n",
 		"pgbouncer-session":     "pgbouncer-session",
-		"pgbouncer-transaction": "pgbouncer-transaction: required by metabase",
+		"pgbouncer-transaction": "pgbouncer-transaction: required by metabase, n8n",
 		"postgres-18":           "postgres-18: required by pgbouncer-session, pgbouncer-transaction",
-		"traefik":               "traefik: optional for metabase",
+		"traefik":               "traefik: optional for metabase, n8n",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("labels %v", got)
+	}
+}
+
+func TestBucketAndParameterNameShapes(t *testing.T) {
+	ok := map[string][]string{
+		manifest.BucketName:    {"userland-fort-s3-0a1b2c3d", "abc", "a.b-c", "a1b2"},
+		manifest.ParameterName: {"/userland/fort-key-0a1b2c3d", "userland/fort-key", "plain_name", "/a/b/c.d"},
+	}
+	bad := map[string][]string{
+		manifest.BucketName:    {"", "ab", "Upper", "-starts", "ends-", "a..b", "192.168.0.1", "has_underscore", "with space"},
+		manifest.ParameterName: {"", "/aws/x", "ssm-key", "/AWS/x", "a//b", "/", "with space", "has$dollar"},
+	}
+	for kind, values := range ok {
+		for _, v := range values {
+			if err := Shape(kind)(v); err != nil {
+				t.Errorf("%s %q: unexpected refusal %v", kind, v, err)
+			}
+		}
+	}
+	for kind, values := range bad {
+		for _, v := range values {
+			if err := Shape(kind)(v); err == nil {
+				t.Errorf("%s %q: accepted", kind, v)
+			}
+		}
+	}
+}
+
+func TestGeneratedNamesCarryTheDependencyAndATail(t *testing.T) {
+	b := GenerateBucketName("FORT_S3")
+	if !strings.HasPrefix(b, "userland-fort-s3-") || len(b) != len("userland-fort-s3-")+8 || Shape(manifest.BucketName)(b) != nil {
+		t.Fatalf("bucket %q", b)
+	}
+	p := GenerateParameterName("FORT_KEY")
+	if !strings.HasPrefix(p, "/userland/fort-key-") || len(p) != len("/userland/fort-key-")+8 || Shape(manifest.ParameterName)(p) != nil {
+		t.Fatalf("parameter %q", p)
+	}
+	if GenerateBucketName("X") == GenerateBucketName("X") {
+		t.Fatal("tails repeat")
+	}
+}
+
+func TestChecklistVariesByPropertyNotByProduct(t *testing.T) {
+	plain := Checklist("DUMPS_S3", manifest.External{Kind: manifest.Bucket}, "b", "r")
+	versioned := Checklist("FORT_S3", manifest.External{Kind: manifest.Bucket, Versioned: true}, "b", "r")
+	deletes := Checklist("LANGFUSE_S3", manifest.External{Kind: manifest.Bucket, Delete: true}, "b", "r")
+	store := Checklist("FORT_KEY", manifest.External{Kind: manifest.SecretStore}, "/p", "r")
+	for name, text := range map[string]string{"plain": plain, "versioned": versioned, "delete": deletes} {
+		if !strings.Contains(text, "1. Make a bucket named b in region r.") || !strings.Contains(text, "4. Enter the endpoint URL") || !strings.Contains(text, `README.md, "Object store"`) {
+			t.Errorf("%s lacks the fixed lines:\n%s", name, text)
+		}
+	}
+	if strings.Contains(plain, "versioning") || !strings.Contains(plain, "must not be able to delete") || !strings.Contains(plain, "expires objects after the days you want") {
+		t.Fatalf("plain:\n%s", plain)
+	}
+	if !strings.Contains(versioned, "Turn versioning on") || !strings.Contains(versioned, "must not be able to delete") || !strings.Contains(versioned, "expires old versions") {
+		t.Fatalf("versioned:\n%s", versioned)
+	}
+	if strings.Contains(deletes, "versioning") || !strings.Contains(deletes, "must also be able to delete") || !strings.Contains(deletes, "deletes on its own schedule") || strings.Contains(deletes, "Nothing in userland deletes") {
+		t.Fatalf("delete:\n%s", deletes)
+	}
+	if !strings.Contains(store, "SecureString parameter named /p in region r") || !strings.Contains(store, "ssm:GetParameter") || !strings.Contains(store, "kms:Decrypt on the aws/ssm key") || !strings.Contains(store, "3. Enter the access key id and its secret.") {
+		t.Fatalf("store:\n%s", store)
+	}
+	if strings.Contains(plain+versioned+deletes+store, "fort ") || strings.Contains(plain+versioned+deletes+store, "langfuse") {
+		t.Fatal("a product's name is in a kind's text")
+	}
+	if !strings.Contains(Retention("X", manifest.External{Kind: manifest.Bucket}), "or accept that it grows") || !strings.Contains(Retention("X", manifest.External{Kind: manifest.Bucket, Versioned: true}), "pile up") || !strings.Contains(Retention("X", manifest.External{Kind: manifest.Bucket, Delete: true}), "own schedule") {
+		t.Fatal("Retention")
 	}
 }

@@ -44,7 +44,7 @@ func contractCommand(root string) *cobra.Command {
 
 func applyCommand(root string) *cobra.Command {
 	return verb(root, "apply", "Render, bring up, provision, print.", operate, cobra.NoArgs, func(m *manifest.Manifest, e *env.File, root string, _ []string) error {
-		return apply(m, e, root)
+		return apply(m, e, root, nil)
 	})
 }
 
@@ -55,7 +55,7 @@ func renderCommand(root string) *cobra.Command {
 }
 
 func provisionCommand(root string) *cobra.Command {
-	return verb(root, "provision", "Converge the door auth and every switched-on database, and nothing else.", operate, cobra.NoArgs, func(m *manifest.Manifest, e *env.File, _ string, _ []string) error {
+	return verb(root, "provision", "Converge the door auth and every switched-on database, on Postgres and ClickHouse, and nothing else.", operate, cobra.NoArgs, func(m *manifest.Manifest, e *env.File, _ string, _ []string) error {
 		return provisionAll(m, e)
 	})
 }
@@ -93,7 +93,7 @@ func on(m *manifest.Manifest, e *env.File, root string, names []string) error {
 	}
 	e.Set(interview.On, strings.Join(on, ","))
 	e.Set(interview.Off, strings.Join(off, ","))
-	asked, err := interview.Variables(m, e)
+	asked, err := interview.Variables(m, e, os.Stdout)
 	if err != nil {
 		return err
 	}
@@ -111,10 +111,10 @@ func on(m *manifest.Manifest, e *env.File, root string, names []string) error {
 	if err := e.Write(); err != nil {
 		return err
 	}
-	if err := apply(m, e, root); err != nil {
+	if err := apply(m, e, root, asked); err != nil {
 		return err
 	}
-	return offer(m, on, turnedOff)
+	return offerReclaim(m, on, turnedOff)
 }
 
 func off(m *manifest.Manifest, e *env.File, root string, names []string) error {
@@ -136,10 +136,10 @@ func off(m *manifest.Manifest, e *env.File, root string, names []string) error {
 	if err := e.Write(); err != nil {
 		return err
 	}
-	if err := apply(m, e, root); err != nil {
+	if err := apply(m, e, root, nil); err != nil {
 		return err
 	}
-	return offer(m, remaining, names)
+	return offerReclaim(m, remaining, names)
 }
 
 func set(m *manifest.Manifest, e *env.File, root string, variable string) error {
@@ -170,15 +170,16 @@ func set(m *manifest.Manifest, e *env.File, root string, variable string) error 
 		}
 		e.Set(variable, value)
 	}
-	asked, err := interview.Variables(m, e)
+	asked, err := interview.Variables(m, e, os.Stdout)
 	if err != nil {
 		return err
 	}
-	say("asked and written: " + strings.Join(append([]string{variable}, asked...), ", "))
+	asked = append([]string{variable}, asked...)
+	say("asked and written: " + strings.Join(asked, ", "))
 	if err := e.Write(); err != nil {
 		return err
 	}
-	return apply(m, e, root)
+	return apply(m, e, root, asked)
 }
 
 func refuseBlocking(m *manifest.Manifest, remaining, turnedOff []string) error {
@@ -204,9 +205,10 @@ func refuse(m *manifest.Manifest, on []string) error {
 }
 
 type leftover struct {
-	volumes   []string
-	notes     map[string]string
-	databases []string
+	volumes    []string
+	notes      map[string]string
+	databases  []string
+	clickhouse []string
 }
 
 func leftBehind(m *manifest.Manifest, on []string, c *manifest.Container) leftover {
@@ -214,24 +216,31 @@ func leftBehind(m *manifest.Manifest, on []string, c *manifest.Container) leftov
 	for _, v := range c.Volumes {
 		name := render.VolumeName(v)
 		l.volumes = append(l.volumes, name)
-		if c.Name == manifest.Postgres {
+		switch c.Name {
+		case manifest.Postgres:
 			l.notes[name] = "every database on Postgres lives in it"
+		case manifest.ClickHouse:
+			l.notes[name] = "every database on ClickHouse lives in it"
 		}
 	}
 	if c.Postgres != nil && !m.SharesDatabase(c, on) {
 		l.databases = append(l.databases, c.Postgres.Database)
 	}
+	if c.ClickHouse != nil && !m.SharesClickHouse(c, on) {
+		l.clickhouse = append(l.clickhouse, c.ClickHouse.Database)
+	}
 	return l
 }
 
 func (l leftover) empty() bool {
-	return len(l.volumes) == 0 && len(l.databases) == 0
+	return len(l.volumes) == 0 && len(l.databases) == 0 && len(l.clickhouse) == 0
 }
 
 func (l leftover) merge(o leftover) leftover {
 	out := leftover{notes: map[string]string{}}
 	out.volumes = append(append(out.volumes, l.volumes...), o.volumes...)
 	out.databases = append(append(out.databases, l.databases...), o.databases...)
+	out.clickhouse = append(append(out.clickhouse, l.clickhouse...), o.clickhouse...)
 	for k, v := range l.notes {
 		out.notes[k] = v
 	}
@@ -251,12 +260,25 @@ func (l leftover) String() string {
 		parts = append(parts, part)
 	}
 	for _, d := range l.databases {
-		parts = append(parts, "database "+d+" and its user")
+		parts = append(parts, "database "+d+" and its user on Postgres")
+	}
+	for _, d := range l.clickhouse {
+		parts = append(parts, "database "+d+" and its user on ClickHouse")
 	}
 	return strings.Join(parts, ", ")
 }
 
-func offer(m *manifest.Manifest, on, names []string) error {
+func (l leftover) storeOff(on []string) string {
+	switch {
+	case len(l.databases) > 0 && !contains(on, manifest.Postgres):
+		return manifest.Postgres
+	case len(l.clickhouse) > 0 && !contains(on, manifest.ClickHouse):
+		return manifest.ClickHouse
+	}
+	return ""
+}
+
+func offerReclaim(m *manifest.Manifest, on, names []string) error {
 	total := leftover{notes: map[string]string{}}
 	for _, name := range names {
 		l := leftBehind(m, on, m.Container(name))
@@ -270,8 +292,8 @@ func offer(m *manifest.Manifest, on, names []string) error {
 		return nil
 	}
 	later := "./bootstrap reclaim " + strings.Join(names, " ")
-	if len(total.databases) > 0 && !contains(on, manifest.Postgres) {
-		say(fmt.Sprintf("%s is off now, so no database can be dropped from here: switch it on and run %s, or reclaim %s itself.", manifest.Postgres, later, manifest.Postgres))
+	if store := total.storeOff(on); store != "" {
+		say(fmt.Sprintf("%s is off now, so no database can be dropped from here: switch it on and run %s, or reclaim %s itself.", store, later, store))
 		return nil
 	}
 	present, _, err := existing(total)
@@ -306,8 +328,12 @@ func reclaim(m *manifest.Manifest, e *env.File, _ string, names []string) error 
 		say(fmt.Sprintf("nothing to reclaim: %s declares no volume and no database", strings.Join(names, ", ")))
 		return nil
 	}
-	if len(total.databases) > 0 && !contains(on, manifest.Postgres) {
-		return fmt.Errorf("database %s lives on %s, which is off; switch it on first, or reclaim %s and its volume takes every database with it", strings.Join(total.databases, ", "), manifest.Postgres, manifest.Postgres)
+	if store := total.storeOff(on); store != "" {
+		databases := total.databases
+		if store == manifest.ClickHouse {
+			databases = total.clickhouse
+		}
+		return fmt.Errorf("database %s lives on %s, which is off; switch it on first, or reclaim %s and its volume takes every database with it", strings.Join(databases, ", "), store, store)
 	}
 	present, gone, err := existing(total)
 	if err != nil {
@@ -351,12 +377,30 @@ func existing(l leftover) (leftover, leftover, error) {
 			present.databases = append(present.databases, d)
 		}
 	}
+	for _, d := range l.clickhouse {
+		p, err := provision.ClickHouseExists(d)
+		if err != nil {
+			return present, gone, err
+		}
+		if p.Empty() {
+			gone.clickhouse = append(gone.clickhouse, d)
+		} else {
+			present.clickhouse = append(present.clickhouse, d)
+		}
+	}
 	return present, gone, nil
 }
 
 func drop(l leftover) error {
 	for _, d := range l.databases {
 		did, err := provision.Drop(d)
+		say(did...)
+		if err != nil {
+			return err
+		}
+	}
+	for _, d := range l.clickhouse {
+		did, err := provision.ClickHouseDrop(d)
 		say(did...)
 		if err != nil {
 			return err
@@ -392,13 +436,13 @@ func renderFile(m *manifest.Manifest, e *env.File, root string) error {
 	return nil
 }
 
-func apply(m *manifest.Manifest, e *env.File, root string) error {
+func apply(m *manifest.Manifest, e *env.File, root string, asked []string) error {
 	if err := renderFile(m, e, root); err != nil {
 		return err
 	}
 	on := e.List(interview.On)
-	if contains(on, manifest.Postgres) {
-		if err := compose(root, "up", "-d", "--wait", "--remove-orphans", manifest.Postgres); err != nil {
+	if stores := intersect([]string{manifest.Postgres, manifest.ClickHouse}, on); len(stores) > 0 {
+		if err := compose(root, append([]string{"up", "-d", "--wait", "--remove-orphans"}, stores...)...); err != nil {
 			return err
 		}
 		if err := provisionAll(m, e); err != nil {
@@ -411,26 +455,50 @@ func apply(m *manifest.Manifest, e *env.File, root string) error {
 	if err := compose(root, "ps", "--format", "table {{.Name}}\t{{.Status}}\t{{.Ports}}"); err != nil {
 		return err
 	}
-	closing(m, e, on)
+	closing(m, e, on, asked)
 	return nil
 }
 
 func provisionAll(m *manifest.Manifest, e *env.File) error {
-	report, err := provision.Door(e)
-	say(report...)
-	if err != nil {
-		return err
+	on := e.List(interview.On)
+	if contains(on, manifest.Postgres) {
+		report, err := provision.Door(e)
+		say(report...)
+		if err != nil {
+			return err
+		}
+		report, err = provision.Databases(m, on, e)
+		say(report...)
+		if err != nil {
+			return err
+		}
 	}
-	report, err = provision.Databases(m, e.List(interview.On), e)
-	say(report...)
-	return err
+	if contains(on, manifest.ClickHouse) {
+		report, err := provision.ClickHouse(m, on, e)
+		say(report...)
+		if err != nil {
+			return err
+		}
+	}
+	if !contains(on, manifest.Postgres) && !contains(on, manifest.ClickHouse) {
+		say(fmt.Sprintf("nothing to provision: %s and %s are off", manifest.Postgres, manifest.ClickHouse))
+	}
+	return nil
 }
 
-func closing(m *manifest.Manifest, e *env.File, on []string) {
+func closing(m *manifest.Manifest, e *env.File, on []string, asked []string) {
 	var keep []string
+	said := map[string]bool{}
 	for _, c := range m.All() {
 		if !contains(on, c.Name) {
 			continue
+		}
+		for _, prefix := range c.Externals() {
+			x := c.External[prefix]
+			if x.Kind == manifest.Bucket && contains(asked, prefix+"_"+manifest.Name) && !said[prefix] {
+				say(interview.Retention(prefix, *x))
+				said[prefix] = true
+			}
 		}
 		if c.HTTP != nil {
 			switch {

@@ -9,8 +9,8 @@ There is no application code here. userland is the ground your own projects stan
 and it is deliberately not one of them.
 
 > **This repo is being built in the open.** Today the interview writes `.env`, every verb
-> exists, and userland renders and runs traefik, Postgres with its doors, and Metabase. The
-> other containers arrive one at a time. The design is published as issues on this repo as
+> exists, and userland renders and runs traefik, Postgres with its doors, ClickHouse, Metabase
+> and n8n. The other containers arrive one at a time. The design is published as issues on this repo as
 > it is settled.
 
 `userland` is the part of a running system that is not the kernel: everything the machine
@@ -21,7 +21,7 @@ runs *for you*. This repo is that layer, for one host.
 | | |
 |---|---|
 | **The proxy** | traefik, terminating TLS for everything else. |
-| **The datastores** | One Postgres, one Redis, one ClickHouse. Shared — one of each for the whole host, never one per application. |
+| **The datastores** | One Postgres and one ClickHouse, shared: one of each for the whole host, never one per application. Redis is the exception: a product that needs it runs its own, inside the product, and nothing else is pointed at it. |
 | **The applications** | n8n, Metabase, Langfuse, Twenty, neo4j. |
 | **fort** | Keeps the files you name, `.env` first, encrypted in a bucket of their own under a master key that never touches the host. |
 
@@ -95,7 +95,7 @@ interview never asks again for what is already there.
 | `./bootstrap postgres database remove NAME` | Drop a consumer's database and its users, after asking. |
 | `./bootstrap apply` | Render, bring up, provision, print. |
 | `./bootstrap render` | Write `compose.yml` and stop. |
-| `./bootstrap provision` | Converge the door's auth user and every switched-on database, and nothing else. |
+| `./bootstrap provision` | Converge the door's auth user and every switched-on database, on Postgres and ClickHouse, and nothing else. |
 | `./bootstrap new PRODUCT CONTAINER…` | For contributors: append a product to `manifest.json` and write its template, with placeholders. |
 | `./bootstrap check [--write]` | Assert the manifest and templates hold. `--write` regenerates `VARIABLES.md`. |
 
@@ -110,7 +110,8 @@ first and defaults to no.
    dependency is off. A missing optional dependency is a warning.
 2. Renders `compose.yml`. Only switched-on containers are in it, every value is a `${VAR}`
    reference, and there are no profiles.
-3. If Postgres is on, brings it up alone and waits for it to be healthy, then provisions.
+3. If Postgres or ClickHouse is on, brings them up first and waits for them to be healthy,
+   then provisions.
 4. Brings up everything else with `--remove-orphans`. A container absent from the file is
    an orphan, so switching it off is enough to remove it; its volume and its database stay.
 5. Prints the URL of everything that answers HTTP and the `.env` lines you must copy off
@@ -125,7 +126,7 @@ published ports change. That is expected and loses nothing.
 and offers to reclaim them. Decline, and `reclaim CONTAINER` drops them later, after naming
 them again and asking. A database shared with a container that is still on is not offered.
 Reclaiming `postgres-18` drops its volume, and every database on Postgres lives in it, which
-the question says. The product's network stays until `docker compose down`; it costs
+the question says; `clickhouse` and its volume the same. The product's network stays until `docker compose down`; it costs
 nothing.
 
 There is no verb that switches everything off: an empty selection is a refusal. To stop
@@ -149,6 +150,9 @@ apply brings them back.
    or when another variable holds a given value. Each answer is checked against its
    type as you type it, and every one must fit on one line, without `$`, `#`, quotes or
    a backtick and without a space at either end, because compose reads `.env` unquoted.
+   A container's external dependencies come after its own variables: the name and the
+   region, then the offer to make it on AWS, then the checklist and the rest, under *Object
+   store* and *Secret store* below.
 5. **Write `.env`**, then apply.
 
 | Type | The interview asks for |
@@ -183,11 +187,225 @@ Provisioning converges on `.env`. Every run, through `docker exec postgres-18 ps
   lookup function in the `postgres` database.
 - Each switched-on container's database: its user, the database with `CONNECT` revoked
   from everyone else and `CREATE` on `public` revoked, and the `vector` extension.
+- Each setting the manifest names on a database's user, such as n8n's `statement_timeout`,
+  with `ALTER ROLE … SET` when the stored value differs. A setting the manifest stops naming
+  is never reset.
 
 A password is compared with the user's stored SCRAM verifier and changed only when they
 differ, so a re-run changes nothing, a hand-edited or restored `.env` heals itself, and
 rotating a password is one edit plus an apply. Passwords travel on stdin, never on a
 command line. Nothing is ever dropped.
+
+On ClickHouse the same, through `docker exec clickhouse clickhouse-client` as the admin user
+`default`, whose password the image itself rewrites from `.env` on every start: each
+switched-on container's database and user, and the grants under *ClickHouse* below, added
+only when `SHOW GRANTS` would change. ClickHouse keeps no hash a program can recompute, so a
+password is checked by logging in as the user, which fails for real there, and set only when
+the login fails. The client reads its password from its environment, so none is on a command
+line.
+
+## Object store
+
+userland never runs an object store. A container that needs a bucket says so in the manifest,
+`"external": {"FORT_S3": {"kind": "bucket", "versioned": true}}`, and the kind supplies five
+variables under that prefix: `_BUCKET`, `_REGION`, `_ENDPOINT`, `_ACCESS_KEY_ID` and
+`_SECRET_ACCESS_KEY`. The interview asks the name (enter to generate
+`userland-<dependency>-<8 hex>`, or type one you made) and the region, then offers to make the
+rest on AWS. Decline, the default, and it prints a checklist with your names in it and asks for
+the endpoint and the access key. A dependency whose five variables are in `.env` is never asked
+again, and two containers naming one prefix share the bucket. The region is text with no
+default, because `auto` is a real answer on Cloudflare R2.
+
+**The offer.** *Create it on AWS now?* Yes asks for an admin access key id, its secret and, if
+it has one, a session token, once per run. They go into the environment of
+`docker run --rm amazon/aws-cli` and are written nowhere, and the CLI says so when it finishes.
+The steps: `sts get-caller-identity`; the bucket, `head-bucket` then `create-bucket` in the
+region; versioning on when the kind says `versioned`; an IAM user named as the bucket; an inline
+policy named `userland` on that user, written on every run; an access key. Then the five
+variables land in `.env`, with the endpoint `https://s3.<region>.amazonaws.com`. What already
+exists is **adopted**, never overwritten: a bucket you own is reused and its versioning
+re-applied, a user that exists gets the policy re-applied and you are asked to paste one of its
+keys or to mint one, and a bucket name another account owns is refused and asked again. A user
+already holding two access keys stops the run, since AWS allows no third. The offer reads
+`AWS_ENDPOINT_URL` from your environment, as the aws CLI does, and nothing else about it is
+configurable. Outside the offer nothing in the interview reaches the network.
+
+**The keys, and what each may do.** Every key reaches its one bucket and nothing else. It lists
+the bucket, gets and puts objects, and aborts a multipart upload, since a killed upload leaves
+parts behind and abort can never remove a finished object. A `versioned` bucket's key may also
+read whether versioning is on. A `delete` bucket's key may delete objects; langfuse's is the one,
+because its Data Retention feature deletes. Every other key can never delete, so a compromised
+host cannot erase its own archives. This is the document the offer writes, for a bucket with
+neither property; `versioned` adds `s3:GetBucketVersioning` to the first statement and `delete`
+adds `s3:DeleteObject` to the second:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {"Effect": "Allow", "Action": ["s3:ListBucket"], "Resource": "arn:aws:s3:::BUCKET"},
+    {"Effect": "Allow", "Action": ["s3:GetObject", "s3:PutObject", "s3:AbortMultipartUpload"], "Resource": "arn:aws:s3:::BUCKET/*"}
+  ]
+}
+```
+
+**Retention is yours.** Nothing in userland deletes from a bucket whose key cannot, and the CLI
+never writes a lifecycle rule: a rule on a whole bucket would expire the base a later ClickHouse
+backup depends on, so any rule is prefix-scoped and set by you at your provider. The first time
+a bucket's container is switched on, the CLI says so; without a rule the bucket grows.
+
+**By hand, at any provider.** The checklist the interview prints is the short form of this.
+
+- **AWS.** Bucket, then user, then the inline policy above, then an access key. New buckets
+  block public access, disable ACLs and encrypt at rest by default, so nothing else is set.
+  Retention is a lifecycle rule: an expiration on the dumps, a noncurrent-version expiration
+  on fort's bucket, and, once ClickHouse's archive shares the dumps' bucket, scoped to the
+  dumps' prefix, because an expired base breaks every increment after it. AWS also
+  recommends a rule that aborts incomplete multipart uploads after a few days; that one is
+  yours too.
+- **Backblaze B2.** An application key restricted to the one bucket with `listFiles`,
+  `readFiles` and `writeFiles`, adding `deleteFiles` only for a `delete` bucket. `writeFiles`
+  without `deleteFiles` is the no-delete key, and an upload to an existing name makes a new
+  version, so fort's fixed keys work. Every B2 bucket keeps versions, so fort's check passes.
+  Retention is B2's lifecycle rules; through the S3 API an expiration rule is paired with a
+  delete-marker rule. Endpoint `https://s3.<region>.backblazeb2.com`, region as in the
+  endpoint. **This is the provider to pick without an AWS account.**
+- **Cloudflare R2.** A token of *Object Read & Write* scoped to the bucket. There is no level
+  that writes without deleting, so on R2 the dumps' key and fort's can delete, and a
+  compromised host could erase its own archives there. R2 has no versioning, so fort needs
+  `FORT_ALLOW_UNVERSIONED=true` and history is one deep. Lifecycle rules exist and are
+  prefix-scoped. Endpoint `https://<account id>.r2.cloudflarestorage.com`, region `auto`.
+  Virtual-hosted requests are accepted, so no path-style setting is needed.
+
+## Secret store
+
+fort's master key lives in a secret store you own, never on the host. The kind is
+`"external": {"FORT_KEY": {"kind": "secret-store"}}`; its five variables are `_PROVIDER`
+(`ssm`, AWS Parameter Store, the one there is), `_NAME`, `_REGION`, `_ACCESS_KEY_ID` and
+`_SECRET_ACCESS_KEY`, and the interview asks them the same way: the name (enter to generate
+`/userland/<dependency>-<8 hex>`, or type one you made), the region, then the offer or the
+checklist.
+
+The offer writes a `SecureString` parameter with a 32-byte random value it never shows and
+never overwrites: a parameter that exists is adopted, because a replaced master key would make
+every archive fort ever wrote unreadable. Then a user named from the parameter with `/` made `-`,
+this policy, and an access key. `NAME` is the parameter's name without its leading slash, and
+`KEY-ID` is the account's `aws/ssm` key, which `kms describe-key --key-id alias/aws/ssm`
+returns; a `SecureString` written without a key of your own is encrypted under it.
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {"Effect": "Allow", "Action": ["ssm:GetParameter"], "Resource": "arn:aws:ssm:REGION:ACCOUNT:parameter/NAME"},
+    {"Effect": "Allow", "Action": ["kms:Decrypt"], "Resource": "arn:aws:kms:REGION:ACCOUNT:key/KEY-ID"}
+  ]
+}
+```
+
+By hand: the parameter, the user, the policy, the access key, in that order. The key may only
+read that one parameter, and nothing it holds writes.
+
+## ClickHouse
+
+userland runs ClickHouse as one container. langfuse calls that development-only, because one
+box has no redundancy. Every event langfuse ingests is written to your bucket first, and
+Postgres holds everything you configure; ClickHouse holds what you see in the UI. A backup of
+its volume is not here yet.
+
+The image is `clickhouse/clickhouse-server:26.8`, the long-term-support line after the 26.4
+that langfuse recommends, and it moves within that line. The container runs at ClickHouse's
+own defaults, in UTC, which langfuse requires, with the one setting the image documents,
+`nofile 262144`. `CLICKHOUSE_PASSWORD` is the admin user `default`, which provisioning uses
+and no product does; the image turns on access management for it, so it may create users.
+
+**Every product gets its own database and user on ClickHouse, made by provisioning, exactly
+as on Postgres.** The template holds nothing product-specific, and the image's `CLICKHOUSE_DB`
+is not used: it acts only on a first start with an empty volume, and would put a product's
+name in the central template. The user is named as its database and holds, on that database
+alone, what langfuse documents its user needs: `SELECT`, `INSERT`, `ALTER UPDATE`,
+`ALTER DELETE`, `CREATE`, `DROP TABLE`, `DROP VIEW`, the column, index and view `ALTER`s,
+`SYSTEM SYNC REPLICA`, `SYSTEM MERGES` and `ALTER SETTINGS`; and `SELECT` on the columns of
+`system.parts`, `system.mutations` and `system.tables` it reads, on `system.processes` and on
+`system.query_log*`. It cannot read another database, make one, or make a user.
+
+**ClickHouse is the heaviest container here.** `CLICKHOUSE_MEM_LIMIT` in `.env` is where a cap
+goes: ClickHouse reads the cgroup limit and keeps its own ceiling at nine tenths of it, so a
+compose limit is one it respects rather than one it dies against. No number is written here.
+
+ClickHouse logs at trace level to files inside the container, in `/var/log/clickhouse-server`,
+rotated by the image; `docker logs clickhouse` shows only the entrypoint. Nothing is published
+on the host: products reach it on `userland_clickhouse`, ports 8123 for HTTP and 9000 for the
+native protocol, and you reach it with `docker exec clickhouse clickhouse-client`.
+
+## n8n
+
+n8n is two containers. `n8n` is the editor, the webhooks and the schedules, and it runs every
+workflow itself. `n8n-runners` runs every Code node, in a container of its own with its own
+user, and reaches nothing but n8n's task broker on port 5679, which nothing routes. The two
+images come from two registries, and that is not a mistake: `docker.n8n.io` mirrors
+`n8nio/n8n` alone and answers `NAME_UNKNOWN` for the runners image, so that one comes from
+Docker Hub. **The two tags are one version**, and every upgrade moves both.
+
+Leave `n8n-runners` off and n8n falls back to its own default, running Code nodes inside its
+own container, which n8n calls internal mode and does not recommend for an instance that holds
+credentials. The interview warns, and the template follows the selection.
+
+**Its database is reached through the transaction door**, and two facts follow from that
+door alone. n8n applies its query time limit by sending `SET statement_timeout` on every
+connection it opens, and the transaction door discards a `SET`, so the template tells n8n to
+send none (`DB_POSTGRESDB_STATEMENT_TIMEOUT: 0`) and the manifest puts the same limit, n8n's
+own five minutes, on the `n8n` user instead, where Postgres applies it as each connection
+starts and the door cannot touch it. For the same reason **the schema stays `public`**: any
+other name is set by a `SET search_path` the door discards just the same, and n8n would read
+and write `public` regardless. `public` is n8n's default, so the manifest never names it.
+
+**`N8N_ENCRYPTION_KEY` is a one-way door.** Every saved credential is encrypted with it; it is
+not in the database and cannot be derived, so losing it loses every credential for good. The
+interview generates it before the first start, because n8n otherwise writes one of its own
+into the volume where you would have to go and find it, and the CLI names the line when it
+finishes: copy it off the machine, or switch on fort.
+
+**The volume needs no backup.** Postgres holds the workflows, the credentials and every
+execution, so the Postgres backup covers them. `n8n_data` holds only what n8n rebuilds: the
+binary data of an execution, which n8n prunes together with the execution that owns it; the
+settings file, which comes back from `.env` because the key is pinned there; the node cache;
+and any community node, which `N8N_REINSTALL_MISSING_PACKAGES` reinstalls from n8n's own
+database record at start. A file a workflow must keep is the workflow's job: write it to
+durable storage from the workflow itself, because n8n deletes from that volume on its own
+schedule. Binary data stays on the filesystem, n8n's default in this mode, and that is a
+one-way door too: a later change of mode does not move the old files.
+
+**Behind traefik**, n8n is told there is exactly one proxy (`N8N_PROXY_HOPS: 1`), so it trusts
+one forwarded address and no more; a larger number would let a client forge its own. In local
+visibility the template also turns off the secure flag on n8n's cookie, because n8n refuses to
+serve its editor over plain HTTP from any hostname but `localhost` or `127.0.0.1`, and
+`n8n.localhost` is not exempt; Safari refuses regardless of hostname. Without traefik, n8n
+listens on `127.0.0.1:5678` and advertises its own default URLs, which are exactly that.
+
+**Time.** `TZ=UTC` sets the clock, as everywhere. `GENERIC_TIMEZONE` sets what a schedule
+means by 03:00, and defaults to `UTC` here rather than n8n's `America/New_York`; add the line
+to `.env` to change it for the instance, and any workflow may set its own.
+
+**Health.** The healthcheck asks `/healthz/readiness`, which answers 200 only once the
+database is connected, the migrations are done and the start has finished; `/healthz` answers
+ok at all times and says nothing about the database. It runs `node`, the one binary the image
+is certain to carry, rather than `curl`. `n8n-runners` waits for it.
+
+**Upgrading.** An upgrade runs the new version's migrations at start; a failure is fatal, and
+many migrations have no way back, so an upgrade is an irreversible change to the database and
+never runs by itself: both tags are exact. Before moving them, read every breaking-changes
+entry between the two versions and take a fresh dump of the `n8n` database. A downgrade is a
+restore from that dump.
+
+**Two things only you can enforce.** A Postgres Trigger node holds its own credential and uses
+`LISTEN`, which the transaction door drops silently: point that credential at
+`pgbouncer-session:5432`, or at `postgres-18:5432` directly, never at the door n8n itself uses.
+And `N8N_PORT` in `.env` is userland's loopback-port variable, as for every HTTP container;
+n8n never sees it and always listens on 5678 inside its container.
+
+n8n runs in n8n's regular mode: no queue, no worker, no Redis. Pruning, the pool and every
+other number run at n8n's defaults.
 
 ## For a consumer
 
@@ -220,8 +438,9 @@ cannot log in, and an event trigger that tells PostgREST to reload its schema ca
 migration, and prints a second DSN for PostgREST that names `postgres-18` directly.
 
 `./bootstrap postgres database remove NAME` drops the database and every user the recipe
-made, after naming them and asking. Redis and ClickHouse stay out of the Contract until a
-consumer needs them.
+made, after naming them and asking. ClickHouse stays out of the Contract until a consumer
+needs it. Redis never enters it: a product that needs Redis runs its own, and so does a
+consumer.
 
 ## check
 
@@ -231,8 +450,8 @@ consumer needs them.
 - every container has a template and every template is a container;
 - no template writes a key the generator owns, and every template's `environment` opens
   with the merge line that carries `TZ=UTC`;
-- every variable a template reads without a default is asked by the manifest or is a
-  database password;
+- every variable a template reads without a default is asked by the manifest, is a
+  database password, or is one an external kind supplies;
 - `VARIABLES.md` matches the manifest and templates;
 - compose accepts the rendered file;
 - `TZ=UTC` reaches every service;
@@ -242,8 +461,9 @@ consumer needs them.
 It runs in CI on every pull request and on every push to `main`
 ([`.github/workflows/check.yml`](.github/workflows/check.yml)), followed by `go test`.
 The manifest itself is refused on load for a container in two products, a volume declared
-by two containers, two containers on one loopback port, or an ask whose type or `when` the
-interview does not know.
+by two containers, two containers on one loopback port, an ask whose type or `when` the
+interview does not know, or an external dependency of a kind it does not know or with a
+property its kind has no use for.
 
 ## Layout
 
@@ -277,10 +497,12 @@ is missing as you fill them in.
 |---|---|
 | `requires` / `optional` | Containers this one depends on. A missing required one is a refusal; a missing optional one is a warning. `depends_on` is emitted from `requires`, with `condition: service_healthy`. |
 | `http` | `container` port, `host` loopback port, and `subdomain` (defaults to the name). Drives the traefik labels and the `ports` block. |
-| `postgres` | The `database` this container gets on Postgres, which is also its user's name, and the `.env` variable holding its `password`. Two containers naming one database share it. It implies `postgres-18` is on. |
+| `postgres` | The `database` this container gets on Postgres, which is also its user's name, and the `.env` variable holding its `password`. Two containers naming one database share it, and must name the same `settings`. It implies `postgres-18` is on. Optional `settings`, as `{"statement_timeout": "5min"}`, are Postgres settings provisioning puts on the user with `ALTER ROLE … SET`, so they reach every connection regardless of the door. |
+| `clickhouse` | The `database` this container gets on ClickHouse, also its user's name, and the `.env` variable holding its `password`; a different variable from the Postgres one. Two containers naming one database share it. It implies `clickhouse` is on. No `settings`. |
 | `ports` | Ports published on every interface. traefik alone. |
 | `volumes` | Named volumes this container mounts. The top-level `volumes` block, "left behind" and `reclaim` all read this. |
 | `asks` | `var`, `type`, `prompt`, optional `when` (`public`, `local` or `VAR=value`) and `keep`. Types: `text hostname email url port secret generated choice paths`, described under *The interview*. |
+| `external` | `{"PREFIX": {"kind": "bucket"}}`, with `"delete": true` or `"versioned": true` where the container needs it, or `{"kind": "secret-store"}`. The kind supplies five variables under the prefix, and the interview asks them with the offer and the checklist, under *Object store* and *Secret store*. Two containers naming one prefix share it and must describe it alike. |
 | `renamed` | `{"OLD_NAME": "NEW_NAME"}`. The next run moves the `.env` value under its new name and drops the old line. |
 | `removed` | Variables this container no longer reads. The next run drops their lines. |
 
@@ -292,8 +514,11 @@ is missing as you fill them in.
 - `environment` opens with `<<: *userland-environment`. That merge line is how `TZ=UTC`
   reaches every container from one anchor the generator emits.
 - The template reads the manifest rather than repeating it: `.Name`, `.Product`,
-  `.Visibility`, `.Postgres` and `.HTTP` are in scope, and `{{ ref "VAR" }}` renders
-  `${VAR}`. Never write a value where a reference will do.
+  `.Visibility`, `.Postgres`, `.ClickHouse` and `.HTTP` are in scope, and `{{ ref "VAR" }}`
+  renders `${VAR}`. Never write a value where a reference will do.
+- `.On "traefik"` says whether another container is in the selection, so a template can
+  follow it: n8n points at its runners only while they are on, and sets its URLs only while
+  traefik is.
 - A container anything requires needs a healthcheck. Postgres's must probe over TCP:
   over the socket it is green while the image's temporary first-start server is up.
 - A named volume is both a line under `volumes` in the manifest and a mount in the
@@ -303,11 +528,11 @@ is missing as you fill them in.
 
 ### Names the CLI knows
 
-Five names are kinds the CLI defines rather than manifest data: `traefik`, whose
+Six names are kinds the CLI defines rather than manifest data: `traefik`, whose
 presence decides labels and loopback ports; `postgres-18`, which provisioning execs into
-and which every container with a database requires; `pgbouncer-transaction` and
-`pgbouncer-session`, the two doors the Contract names; and `pgbouncer_auth`, the user both
-doors look passwords up with.
+and which every container with a Postgres database requires; `clickhouse`, the same for a
+ClickHouse database; `pgbouncer-transaction` and `pgbouncer-session`, the two doors the
+Contract names; and `pgbouncer_auth`, the user both doors look passwords up with.
 
 ## Notes
 
@@ -323,6 +548,8 @@ doors look passwords up with.
   you, under a master key that lives in a secret store you own.
 - **Postgres and the doors run at their images' defaults.** No pool size, connection
   ceiling or memory setting is written anywhere in this repo, beyond the two doors'
-  client ceiling. Measure first; a number guessed in advance is worse than none.
+  client ceiling. Measure first; a number guessed in advance is worse than none. n8n's
+  five-minute query limit is n8n's own default, moved onto its Postgres user because the
+  door discards it where n8n sets it; it is not a number of ours.
 
 See [CONTEXT.md](CONTEXT.md) for the language this repo uses.

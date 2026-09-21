@@ -102,12 +102,13 @@ func checkTemplateBodies(r *Report, m *manifest.Manifest, templates *render.Temp
 	}
 	var bodies []body
 	clean := true
+	all := render.Set(m.Names())
 	for _, c := range m.All() {
 		if !templates.Has(c.Name) {
 			continue
 		}
 		for _, visibility := range Visibilities {
-			text, err := templates.Body(c, visibility)
+			text, err := templates.Body(c, visibility, all)
 			if err != nil {
 				r.fail("template %s (%s): %v", c.Name, visibility, err)
 				clean = false
@@ -148,11 +149,8 @@ func checkTemplateBodies(r *Report, m *manifest.Manifest, templates *render.Temp
 func checkReferences(r *Report, m *manifest.Manifest, bodies []body) {
 	known := map[string]bool{}
 	for _, c := range m.All() {
-		for _, a := range c.Asks {
+		for _, a := range c.AllAsks() {
 			known[a.Var] = true
-		}
-		if c.Postgres != nil {
-			known[c.Postgres.Password] = true
 		}
 	}
 	clean := true
@@ -165,7 +163,7 @@ func checkReferences(r *Report, m *manifest.Manifest, bodies []body) {
 		}
 	}
 	if clean {
-		r.pass("every variable a template reads without a default is asked or is a database password")
+		r.pass("every variable a template reads without a default is asked, is a database password, or is one an external kind supplies")
 	}
 }
 

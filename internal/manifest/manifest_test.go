@@ -39,7 +39,7 @@ func TestProductOrderOnTheRealManifest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"metabase", "postgres", "traefik"}
+	want := []string{"clickhouse", "metabase", "n8n", "postgres", "traefik"}
 	if got := m.ProductOrder(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("order %v, want %v", got, want)
 	}
@@ -47,13 +47,20 @@ func TestProductOrderOnTheRealManifest(t *testing.T) {
 
 func TestLoadRefusesBadAsks(t *testing.T) {
 	cases := map[string]string{
-		"unknown type":           `{"products": {"p": {"containers": {"c": {"asks": [{"var": "X", "type": "number"}]}}}}}`,
-		"choice without options": `{"products": {"p": {"containers": {"c": {"asks": [{"var": "X", "type": "choice"}]}}}}}`,
-		"bad when":               `{"products": {"p": {"containers": {"c": {"asks": [{"var": "X", "type": "text", "when": "sometimes"}]}}}}}`,
-		"lowercase var":          `{"products": {"p": {"containers": {"c": {"asks": [{"var": "x", "type": "text"}]}}}}}`,
-		"bad rename":             `{"products": {"p": {"containers": {"c": {"renamed": {"old": "NEW"}}}}}}`,
-		"bad removed":            `{"products": {"p": {"containers": {"c": {"removed": ["x-y"]}}}}}`,
-		"bad password var":       `{"products": {"p": {"containers": {"c": {"postgres": {"database": "c", "password": "c_pw"}}}}}}`,
+		"unknown type":            `{"products": {"p": {"containers": {"c": {"asks": [{"var": "X", "type": "number"}]}}}}}`,
+		"choice without options":  `{"products": {"p": {"containers": {"c": {"asks": [{"var": "X", "type": "choice"}]}}}}}`,
+		"bad when":                `{"products": {"p": {"containers": {"c": {"asks": [{"var": "X", "type": "text", "when": "sometimes"}]}}}}}`,
+		"lowercase var":           `{"products": {"p": {"containers": {"c": {"asks": [{"var": "x", "type": "text"}]}}}}}`,
+		"bad rename":              `{"products": {"p": {"containers": {"c": {"renamed": {"old": "NEW"}}}}}}`,
+		"bad removed":             `{"products": {"p": {"containers": {"c": {"removed": ["x-y"]}}}}}`,
+		"bad password var":        `{"products": {"p": {"containers": {"c": {"postgres": {"database": "c", "password": "c_pw"}}}}}}`,
+		"bad setting name":        `{"products": {"p": {"containers": {"c": {"postgres": {"database": "c", "password": "C_PW", "settings": {"Statement Timeout": "5min"}}}}}}}`,
+		"empty setting":           `{"products": {"p": {"containers": {"c": {"postgres": {"database": "c", "password": "C_PW", "settings": {"statement_timeout": ""}}}}}}}`,
+		"settings disagree":       `{"products": {"p": {"containers": {"a": {"postgres": {"database": "c", "password": "C_PW", "settings": {"statement_timeout": "5min"}}}, "b": {"postgres": {"database": "c", "password": "C_PW"}}}}}}`,
+		"clickhouse bad database": `{"products": {"p": {"containers": {"c": {"clickhouse": {"database": "1c", "password": "C_PW"}}}}}}`,
+		"clickhouse bad password": `{"products": {"p": {"containers": {"c": {"clickhouse": {"database": "c", "password": "c_pw"}}}}}}`,
+		"clickhouse settings":     `{"products": {"p": {"containers": {"c": {"clickhouse": {"database": "c", "password": "C_PW", "settings": {"x": "1"}}}}}}}`,
+		"one variable two stores": `{"products": {"p": {"containers": {"c": {"postgres": {"database": "c", "password": "C_PW"}, "clickhouse": {"database": "c", "password": "C_PW"}}}}}}`,
 	}
 	for name, body := range cases {
 		if _, err := load(t, body); err == nil || !strings.HasPrefix(err.Error(), "manifest.json: ") {
@@ -105,6 +112,41 @@ func TestAskForFindsAskedAndImpliedVariables(t *testing.T) {
 	}
 }
 
+func TestClickHouseDatabaseIsAskedRefusedAndShared(t *testing.T) {
+	m, err := load(t, `{"products": {
+		"clickhouse": {"containers": {"clickhouse": {}}},
+		"postgres": {"containers": {"postgres-18": {}}},
+		"langfuse": {"containers": {
+			"langfuse-web": {"postgres": {"database": "langfuse", "password": "LANGFUSE_DB_PASSWORD"}, "clickhouse": {"database": "langfuse", "password": "LANGFUSE_CH_PASSWORD"}},
+			"langfuse-worker": {"requires": ["langfuse-web"], "clickhouse": {"database": "langfuse", "password": "LANGFUSE_CH_PASSWORD"}}
+		}}
+	}}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	web := m.Container("langfuse-web")
+	var vars []string
+	for _, a := range web.AllAsks() {
+		vars = append(vars, a.Var+":"+a.Type)
+	}
+	if !reflect.DeepEqual(vars, []string{"LANGFUSE_DB_PASSWORD:generated", "LANGFUSE_CH_PASSWORD:generated"}) {
+		t.Fatalf("asks: %v", vars)
+	}
+	if c, _, ok := m.AskFor("LANGFUSE_CH_PASSWORD"); !ok || c.Name != "langfuse-web" {
+		t.Fatal("the ClickHouse password is an implied ask")
+	}
+	v := m.Validate([]string{"langfuse-web", "postgres-18"})
+	if len(v.Refusals) != 1 || !strings.Contains(v.Refusals[0], "database on ClickHouse, so clickhouse must be on") {
+		t.Fatalf("refusals: %v", v.Refusals)
+	}
+	if v := m.Validate([]string{"langfuse-web", "postgres-18", "clickhouse"}); len(v.Refusals) != 0 {
+		t.Fatalf("refusals with both stores on: %v", v.Refusals)
+	}
+	if !m.SharesClickHouse(web, []string{"langfuse-worker"}) || m.SharesClickHouse(web, nil) || m.SharesDatabase(web, []string{"langfuse-worker"}) {
+		t.Fatal("sharing is per store")
+	}
+}
+
 func TestDatabaseAndSharesDatabase(t *testing.T) {
 	m, err := load(t, `{"products": {
 		"postgres": {"containers": {"postgres-18": {}}},
@@ -128,5 +170,65 @@ func TestDatabaseAndSharesDatabase(t *testing.T) {
 	}
 	if !ValidIdentifier("app_1") || ValidIdentifier("1app") || ValidIdentifier("App") || !ValidName("pgbouncer-transaction") || ValidName("a_b") {
 		t.Fatal("name rules")
+	}
+}
+
+func TestExternalKindsLoadAndSupplyTheirVariables(t *testing.T) {
+	m, err := load(t, `{"products": {
+		"fort": {"containers": {"fort": {"external": {"FORT_S3": {"kind": "bucket", "versioned": true}, "FORT_KEY": {"kind": "secret-store"}}}}},
+		"langfuse": {"containers": {
+			"langfuse-web": {"external": {"LANGFUSE_S3": {"kind": "bucket", "delete": true}}},
+			"langfuse-worker": {"requires": ["langfuse-web"], "external": {"LANGFUSE_S3": {"kind": "bucket", "delete": true}}}
+		}}
+	}}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fort := m.Container("fort")
+	if !reflect.DeepEqual(fort.Externals(), []string{"FORT_KEY", "FORT_S3"}) {
+		t.Fatalf("externals %v", fort.Externals())
+	}
+	var vars []string
+	for _, a := range fort.AllAsks() {
+		vars = append(vars, a.Var+":"+a.Type)
+	}
+	want := []string{
+		"FORT_KEY_PROVIDER:choice", "FORT_KEY_NAME:parameter-name", "FORT_KEY_REGION:text", "FORT_KEY_ACCESS_KEY_ID:secret", "FORT_KEY_SECRET_ACCESS_KEY:secret",
+		"FORT_S3_BUCKET:bucket-name", "FORT_S3_REGION:text", "FORT_S3_ENDPOINT:url", "FORT_S3_ACCESS_KEY_ID:secret", "FORT_S3_SECRET_ACCESS_KEY:secret",
+	}
+	if !reflect.DeepEqual(vars, want) {
+		t.Fatalf("asks %v", vars)
+	}
+	if c, a, ok := m.AskFor("FORT_S3_BUCKET"); !ok || c.Name != "fort" || a.Type != BucketName {
+		t.Fatal("a kind's variable is found like an ask")
+	}
+	if c, x, ok := m.External("LANGFUSE_S3"); !ok || c.Name != "langfuse-web" || !x.Delete || x.Describe() != "bucket, delete" {
+		t.Fatalf("External lookup: %v %v %v", c, x, ok)
+	}
+	if (External{Kind: Bucket, Versioned: true}).Describe() != "bucket, versioned" || (External{Kind: SecretStore}).Describe() != "secret-store" {
+		t.Fatal("Describe")
+	}
+	if Dependency("FORT_S3") != "fort-s3" || Dependency("X") != "x" {
+		t.Fatal("Dependency")
+	}
+}
+
+func TestLoadRefusesBadExternals(t *testing.T) {
+	cases := map[string]string{
+		"unknown kind":             `{"products": {"p": {"containers": {"c": {"external": {"X": {"kind": "vault"}}}}}}}`,
+		"no kind":                  `{"products": {"p": {"containers": {"c": {"external": {"X": {}}}}}}}`,
+		"secret store versioned":   `{"products": {"p": {"containers": {"c": {"external": {"X": {"kind": "secret-store", "versioned": true}}}}}}}`,
+		"secret store delete":      `{"products": {"p": {"containers": {"c": {"external": {"X": {"kind": "secret-store", "delete": true}}}}}}}`,
+		"lowercase prefix":         `{"products": {"p": {"containers": {"c": {"external": {"x_s3": {"kind": "bucket"}}}}}}}`,
+		"shared but different":     `{"products": {"p": {"containers": {"a": {"external": {"X": {"kind": "bucket"}}}, "b": {"external": {"X": {"kind": "bucket", "delete": true}}}}}}}`,
+		"ask collides with a kind": `{"products": {"p": {"containers": {"c": {"asks": [{"var": "X_BUCKET", "type": "text"}], "external": {"X": {"kind": "bucket"}}}}}}}`,
+	}
+	for name, body := range cases {
+		if _, err := load(t, body); err == nil || !strings.HasPrefix(err.Error(), "manifest.json: ") {
+			t.Errorf("%s: want a manifest.json refusal, got %v", name, err)
+		}
+	}
+	if _, err := load(t, `{"products": {"p": {"containers": {"a": {"external": {"X": {"kind": "bucket", "delete": true}}}, "b": {"external": {"X": {"kind": "bucket", "delete": true}}}}}}}`); err != nil {
+		t.Fatalf("two containers may share one external when they agree: %v", err)
 	}
 }

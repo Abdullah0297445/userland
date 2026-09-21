@@ -15,7 +15,12 @@ import (
 	"github.com/Abdullah0297445/userland/internal/manifest"
 )
 
-var hostname = regexp.MustCompile(`^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
+var (
+	hostname  = regexp.MustCompile(`^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
+	bucket    = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$`)
+	parameter = regexp.MustCompile(`^/?[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)*$`)
+	numeric   = regexp.MustCompile(`^[0-9.]+$`)
+)
 
 func Generate() string {
 	return rand.Text()
@@ -70,6 +75,27 @@ func Shape(kind string) func(string) error {
 			n, err := strconv.Atoi(v)
 			if err != nil || n < 1 || n > 65535 {
 				return errors.New("not a port: a number from 1 to 65535")
+			}
+			return nil
+		}
+	case manifest.BucketName:
+		return func(v string) error {
+			if err := present(v); err != nil {
+				return err
+			}
+			if !bucket.MatchString(v) || strings.Contains(v, "..") || numeric.MatchString(v) {
+				return errors.New("not a bucket name: 3 to 63 lower-case letters, digits, hyphens and dots, starting and ending with a letter or digit")
+			}
+			return nil
+		}
+	case manifest.ParameterName:
+		return func(v string) error {
+			if err := present(v); err != nil {
+				return err
+			}
+			first := strings.ToLower(strings.TrimPrefix(v, "/"))
+			if !parameter.MatchString(v) || strings.HasPrefix(first, "aws") || strings.HasPrefix(first, "ssm") {
+				return errors.New("not a parameter name: letters, digits, . _ - and / as a path, like /userland/fort-key, and not starting with aws or ssm")
 			}
 			return nil
 		}

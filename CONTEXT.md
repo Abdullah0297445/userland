@@ -150,7 +150,8 @@ _Avoid_: reuse, import, attach, take over
 One database on Postgres or ClickHouse, made by provisioning for one product, or on
 Postgres for one consumer, and owned by a user of the same name. Every container that
 connects as that user shares it. A database that serves customers of its own is still one
-database. Nothing on Redis is a database in this sense; Redis isolates by number.
+database. Nothing on Redis is a database in this sense: a product that needs Redis runs its
+own, inside the product, and nothing else is ever pointed at it.
 _Avoid_: tenant, schema (for the whole thing), account, workspace
 
 **User**:
@@ -160,7 +161,7 @@ _Avoid_: tenant, role (for this), account, owner (as its name)
 
 **Superuser**:
 The single Postgres superuser that provisions databases and runs the backup. No other user
-holds it.
+holds it. On ClickHouse the same seat is the user `default`, which provisioning alone uses.
 _Avoid_: engine superuser, admin, root, postgres user
 
 **Door**:

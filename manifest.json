@@ -33,6 +33,16 @@
         }
       }
     },
+    "clickhouse": {
+      "containers": {
+        "clickhouse": {
+          "volumes": ["clickhouse_data"],
+          "asks": [
+            {"var": "CLICKHOUSE_PASSWORD", "type": "generated", "prompt": "Password of the ClickHouse admin user, default"}
+          ]
+        }
+      }
+    },
     "metabase": {
       "containers": {
         "metabase": {
@@ -43,6 +53,26 @@
           "volumes": ["metabase_plugins"],
           "asks": [
             {"var": "MB_ENCRYPTION_SECRET_KEY", "type": "generated", "prompt": "Key metabase encrypts saved data-source credentials with", "keep": true}
+          ]
+        }
+      }
+    },
+    "n8n": {
+      "containers": {
+        "n8n": {
+          "requires": ["pgbouncer-transaction"],
+          "optional": ["traefik", "n8n-runners"],
+          "http": {"container": 5678, "host": 5678},
+          "postgres": {"database": "n8n", "password": "N8N_DB_PASSWORD", "settings": {"statement_timeout": "5min"}},
+          "volumes": ["n8n_data"],
+          "asks": [
+            {"var": "N8N_ENCRYPTION_KEY", "type": "generated", "prompt": "Key n8n encrypts saved credentials with", "keep": true}
+          ]
+        },
+        "n8n-runners": {
+          "requires": ["n8n"],
+          "asks": [
+            {"var": "N8N_RUNNERS_AUTH_TOKEN", "type": "generated", "prompt": "Shared secret between n8n and its runners"}
           ]
         }
       }

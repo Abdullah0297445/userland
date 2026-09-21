@@ -26,11 +26,8 @@ func Variables(m *manifest.Manifest, bodies []body) string {
 	})
 	asked := map[string]bool{}
 	for _, c := range m.All() {
-		for _, a := range c.Asks {
+		for _, a := range c.AllAsks() {
 			asked[a.Var] = true
-		}
-		if c.Postgres != nil {
-			asked[c.Postgres.Password] = true
 		}
 	}
 	defaults := map[string]map[string]string{}
@@ -71,6 +68,15 @@ func Variables(m *manifest.Manifest, bodies []body) string {
 		if c.Postgres != nil {
 			rows = append(rows, row{c.Postgres.Password, "generated", "always", "", fmt.Sprintf("Password of the `%s` user on Postgres, which owns the `%s` database. Provisioning converges it to whatever this holds.", c.Postgres.Database, c.Postgres.Database)})
 		}
+		if c.ClickHouse != nil {
+			rows = append(rows, row{c.ClickHouse.Password, "generated", "always", "", fmt.Sprintf("Password of the `%s` user on ClickHouse, which reaches the `%s` database and nothing else. Provisioning converges it to whatever this holds.", c.ClickHouse.Database, c.ClickHouse.Database)})
+		}
+		for _, prefix := range c.Externals() {
+			x := c.External[prefix]
+			for _, a := range x.Asks(prefix) {
+				rows = append(rows, row{a.Var, x.Describe(), "always", "", externalMeaning(prefix, *x, a)})
+			}
+		}
 		var optional []row
 		if c.HTTP != nil {
 			optional = append(optional, row{render.PortVar(c.Name), "optional", "", "", fmt.Sprintf("Loopback port to publish on while traefik is on; nothing is published unless it is set. With traefik off the container publishes on `127.0.0.1:%d` regardless.", c.HTTP.Host)})
@@ -91,6 +97,36 @@ func Variables(m *manifest.Manifest, bodies []body) string {
 		writeTable(&b, append(rows, optional...))
 	}
 	return b.String()
+}
+
+func externalMeaning(prefix string, x manifest.External, a manifest.Ask) string {
+	switch strings.TrimPrefix(a.Var, prefix+"_") {
+	case manifest.Name:
+		return fmt.Sprintf("Name of the bucket. Enter to generate `userland-%s-<8 hex>`, or type one you made.", manifest.Dependency(prefix))
+	case manifest.Region:
+		if x.Kind == manifest.Bucket {
+			return "Region of the bucket, as the provider names it; `auto` on Cloudflare R2."
+		}
+		return "Region of the parameter."
+	case manifest.Endpoint:
+		return "URL the bucket is reached at. The offer writes `https://s3.<region>.amazonaws.com`."
+	case manifest.AccessKeyID:
+		if x.Kind == manifest.Bucket {
+			rights := "list the bucket and get and put objects, and never delete"
+			if x.Delete {
+				rights = "list the bucket and get, put and delete objects"
+			}
+			return fmt.Sprintf("Access key that reaches this bucket and nothing else. It may %s.", rights)
+		}
+		return "Access key that may read this one parameter and nothing else."
+	case manifest.SecretAccessKey:
+		return "Its secret."
+	case manifest.Provider:
+		return "Secret store the master key lives in; `ssm` is AWS Parameter Store, the one there is."
+	case manifest.Parameter:
+		return fmt.Sprintf("Name of the SecureString parameter that holds the master key. Enter to generate `/userland/%s-<8 hex>`, or type one you made.", manifest.Dependency(prefix))
+	}
+	return a.Prompt
 }
 
 func writeTable(b *strings.Builder, rows []row) {
