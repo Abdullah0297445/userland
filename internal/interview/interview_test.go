@@ -96,10 +96,12 @@ func TestLabelNamesWhoNeedsIt(t *testing.T) {
 	}
 	want := map[string]string{
 		"metabase":              "metabase",
+		"n8n":                   "n8n: required by n8n-runners",
+		"n8n-runners":           "n8n-runners: optional for n8n",
 		"pgbouncer-session":     "pgbouncer-session",
-		"pgbouncer-transaction": "pgbouncer-transaction: required by metabase",
+		"pgbouncer-transaction": "pgbouncer-transaction: required by metabase, n8n",
 		"postgres-18":           "postgres-18: required by pgbouncer-session, pgbouncer-transaction",
-		"traefik":               "traefik: optional for metabase",
+		"traefik":               "traefik: optional for metabase, n8n",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("labels %v", got)

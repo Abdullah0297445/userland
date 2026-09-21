@@ -9,8 +9,8 @@ There is no application code here. userland is the ground your own projects stan
 and it is deliberately not one of them.
 
 > **This repo is being built in the open.** Today the interview writes `.env`, every verb
-> exists, and userland renders and runs traefik, Postgres with its doors, and Metabase. The
-> other containers arrive one at a time. The design is published as issues on this repo as
+> exists, and userland renders and runs traefik, Postgres with its doors, Metabase and n8n.
+> The other containers arrive one at a time. The design is published as issues on this repo as
 > it is settled.
 
 `userland` is the part of a running system that is not the kernel: everything the machine
@@ -21,7 +21,7 @@ runs *for you*. This repo is that layer, for one host.
 | | |
 |---|---|
 | **The proxy** | traefik, terminating TLS for everything else. |
-| **The datastores** | One Postgres, one Redis, one ClickHouse. Shared — one of each for the whole host, never one per application. |
+| **The datastores** | One Postgres and one ClickHouse, shared: one of each for the whole host, never one per application. Redis is the exception: a product that needs it runs its own, inside the product, and nothing else is pointed at it. |
 | **The applications** | n8n, Metabase, Langfuse, Twenty, neo4j. |
 | **fort** | Keeps the files you name, `.env` first, encrypted in a bucket of their own under a master key that never touches the host. |
 
@@ -183,11 +183,83 @@ Provisioning converges on `.env`. Every run, through `docker exec postgres-18 ps
   lookup function in the `postgres` database.
 - Each switched-on container's database: its user, the database with `CONNECT` revoked
   from everyone else and `CREATE` on `public` revoked, and the `vector` extension.
+- Each setting the manifest names on a database's user, such as n8n's `statement_timeout`,
+  with `ALTER ROLE … SET` when the stored value differs. A setting the manifest stops naming
+  is never reset.
 
 A password is compared with the user's stored SCRAM verifier and changed only when they
 differ, so a re-run changes nothing, a hand-edited or restored `.env` heals itself, and
 rotating a password is one edit plus an apply. Passwords travel on stdin, never on a
 command line. Nothing is ever dropped.
+
+## n8n
+
+n8n is two containers. `n8n` is the editor, the webhooks and the schedules, and it runs every
+workflow itself. `n8n-runners` runs every Code node, in a container of its own with its own
+user, and reaches nothing but n8n's task broker on port 5679, which nothing routes. The two
+images come from two registries, and that is not a mistake: `docker.n8n.io` mirrors
+`n8nio/n8n` alone and answers `NAME_UNKNOWN` for the runners image, so that one comes from
+Docker Hub. **The two tags are one version**, and every upgrade moves both.
+
+Leave `n8n-runners` off and n8n falls back to its own default, running Code nodes inside its
+own container, which n8n calls internal mode and does not recommend for an instance that holds
+credentials. The interview warns, and the template follows the selection.
+
+**Its database is reached through the transaction door**, and two facts follow from that
+door alone. n8n applies its query time limit by sending `SET statement_timeout` on every
+connection it opens, and the transaction door discards a `SET`, so the template tells n8n to
+send none (`DB_POSTGRESDB_STATEMENT_TIMEOUT: 0`) and the manifest puts the same limit, n8n's
+own five minutes, on the `n8n` user instead, where Postgres applies it as each connection
+starts and the door cannot touch it. For the same reason **the schema stays `public`**: any
+other name is set by a `SET search_path` the door discards just the same, and n8n would read
+and write `public` regardless. `public` is n8n's default, so the manifest never names it.
+
+**`N8N_ENCRYPTION_KEY` is a one-way door.** Every saved credential is encrypted with it; it is
+not in the database and cannot be derived, so losing it loses every credential for good. The
+interview generates it before the first start, because n8n otherwise writes one of its own
+into the volume where you would have to go and find it, and the CLI names the line when it
+finishes: copy it off the machine, or switch on fort.
+
+**The volume needs no backup.** Postgres holds the workflows, the credentials and every
+execution, so the Postgres backup covers them. `n8n_data` holds only what n8n rebuilds: the
+binary data of an execution, which n8n prunes together with the execution that owns it; the
+settings file, which comes back from `.env` because the key is pinned there; the node cache;
+and any community node, which `N8N_REINSTALL_MISSING_PACKAGES` reinstalls from n8n's own
+database record at start. A file a workflow must keep is the workflow's job: write it to
+durable storage from the workflow itself, because n8n deletes from that volume on its own
+schedule. Binary data stays on the filesystem, n8n's default in this mode, and that is a
+one-way door too: a later change of mode does not move the old files.
+
+**Behind traefik**, n8n is told there is exactly one proxy (`N8N_PROXY_HOPS: 1`), so it trusts
+one forwarded address and no more; a larger number would let a client forge its own. In local
+visibility the template also turns off the secure flag on n8n's cookie, because n8n refuses to
+serve its editor over plain HTTP from any hostname but `localhost` or `127.0.0.1`, and
+`n8n.localhost` is not exempt; Safari refuses regardless of hostname. Without traefik, n8n
+listens on `127.0.0.1:5678` and advertises its own default URLs, which are exactly that.
+
+**Time.** `TZ=UTC` sets the clock, as everywhere. `GENERIC_TIMEZONE` sets what a schedule
+means by 03:00, and defaults to `UTC` here rather than n8n's `America/New_York`; add the line
+to `.env` to change it for the instance, and any workflow may set its own.
+
+**Health.** The healthcheck asks `/healthz/readiness`, which answers 200 only once the
+database is connected, the migrations are done and the start has finished; `/healthz` answers
+ok at all times and says nothing about the database. It runs `node`, the one binary the image
+is certain to carry, rather than `curl`. `n8n-runners` waits for it.
+
+**Upgrading.** An upgrade runs the new version's migrations at start; a failure is fatal, and
+many migrations have no way back, so an upgrade is an irreversible change to the database and
+never runs by itself: both tags are exact. Before moving them, read every breaking-changes
+entry between the two versions and take a fresh dump of the `n8n` database. A downgrade is a
+restore from that dump.
+
+**Two things only you can enforce.** A Postgres Trigger node holds its own credential and uses
+`LISTEN`, which the transaction door drops silently: point that credential at
+`pgbouncer-session:5432`, or at `postgres-18:5432` directly, never at the door n8n itself uses.
+And `N8N_PORT` in `.env` is userland's loopback-port variable, as for every HTTP container;
+n8n never sees it and always listens on 5678 inside its container.
+
+n8n runs in n8n's regular mode: no queue, no worker, no Redis. Pruning, the pool and every
+other number run at n8n's defaults.
 
 ## For a consumer
 
@@ -220,8 +292,9 @@ cannot log in, and an event trigger that tells PostgREST to reload its schema ca
 migration, and prints a second DSN for PostgREST that names `postgres-18` directly.
 
 `./bootstrap postgres database remove NAME` drops the database and every user the recipe
-made, after naming them and asking. Redis and ClickHouse stay out of the Contract until a
-consumer needs them.
+made, after naming them and asking. ClickHouse stays out of the Contract until a consumer
+needs it. Redis never enters it: a product that needs Redis runs its own, and so does a
+consumer.
 
 ## check
 
@@ -277,7 +350,7 @@ is missing as you fill them in.
 |---|---|
 | `requires` / `optional` | Containers this one depends on. A missing required one is a refusal; a missing optional one is a warning. `depends_on` is emitted from `requires`, with `condition: service_healthy`. |
 | `http` | `container` port, `host` loopback port, and `subdomain` (defaults to the name). Drives the traefik labels and the `ports` block. |
-| `postgres` | The `database` this container gets on Postgres, which is also its user's name, and the `.env` variable holding its `password`. Two containers naming one database share it. It implies `postgres-18` is on. |
+| `postgres` | The `database` this container gets on Postgres, which is also its user's name, and the `.env` variable holding its `password`. Two containers naming one database share it, and must name the same `settings`. It implies `postgres-18` is on. Optional `settings`, as `{"statement_timeout": "5min"}`, are Postgres settings provisioning puts on the user with `ALTER ROLE … SET`, so they reach every connection regardless of the door. |
 | `ports` | Ports published on every interface. traefik alone. |
 | `volumes` | Named volumes this container mounts. The top-level `volumes` block, "left behind" and `reclaim` all read this. |
 | `asks` | `var`, `type`, `prompt`, optional `when` (`public`, `local` or `VAR=value`) and `keep`. Types: `text hostname email url port secret generated choice paths`, described under *The interview*. |
@@ -294,6 +367,9 @@ is missing as you fill them in.
 - The template reads the manifest rather than repeating it: `.Name`, `.Product`,
   `.Visibility`, `.Postgres` and `.HTTP` are in scope, and `{{ ref "VAR" }}` renders
   `${VAR}`. Never write a value where a reference will do.
+- `.On "traefik"` says whether another container is in the selection, so a template can
+  follow it: n8n points at its runners only while they are on, and sets its URLs only while
+  traefik is.
 - A container anything requires needs a healthcheck. Postgres's must probe over TCP:
   over the socket it is green while the image's temporary first-start server is up.
 - A named volume is both a line under `volumes` in the manifest and a mount in the
@@ -323,6 +399,8 @@ doors look passwords up with.
   you, under a master key that lives in a secret store you own.
 - **Postgres and the doors run at their images' defaults.** No pool size, connection
   ceiling or memory setting is written anywhere in this repo, beyond the two doors'
-  client ceiling. Measure first; a number guessed in advance is worse than none.
+  client ceiling. Measure first; a number guessed in advance is worse than none. n8n's
+  five-minute query limit is n8n's own default, moved onto its Postgres user because the
+  door discards it where n8n sets it; it is not a number of ours.
 
 See [CONTEXT.md](CONTEXT.md) for the language this repo uses.

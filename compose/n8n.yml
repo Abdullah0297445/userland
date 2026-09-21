@@ -1,0 +1,53 @@
+{{ define "n8n" -}}
+image: docker.n8n.io/n8nio/n8n:2.39.8
+environment:
+  <<: *userland-environment
+  DB_TYPE: postgresdb
+  DB_POSTGRESDB_HOST: pgbouncer-transaction
+  DB_POSTGRESDB_PORT: 5432
+  DB_POSTGRESDB_DATABASE: {{ .Postgres.Database }}
+  DB_POSTGRESDB_USER: {{ .Postgres.Database }}
+  DB_POSTGRESDB_PASSWORD: {{ ref .Postgres.Password }}
+  DB_POSTGRESDB_STATEMENT_TIMEOUT: 0
+  N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY}
+  N8N_REINSTALL_MISSING_PACKAGES: true
+  GENERIC_TIMEZONE: ${GENERIC_TIMEZONE:-UTC}
+{{- if .On "traefik" }}
+  N8N_PROXY_HOPS: 1
+{{- if eq .Visibility "public" }}
+  N8N_HOST: {{ .HTTP.Subdomain }}.${DOMAIN}
+  N8N_PROTOCOL: https
+  N8N_EDITOR_BASE_URL: https://{{ .HTTP.Subdomain }}.${DOMAIN}/
+  N8N_WEBHOOK_URL: https://{{ .HTTP.Subdomain }}.${DOMAIN}/
+{{- else }}
+  N8N_HOST: {{ .HTTP.Subdomain }}.localhost
+  N8N_EDITOR_BASE_URL: http://{{ .HTTP.Subdomain }}.localhost/
+  N8N_WEBHOOK_URL: http://{{ .HTTP.Subdomain }}.localhost/
+{{- end }}
+{{- end }}
+{{- if eq .Visibility "local" }}
+  N8N_SECURE_COOKIE: false
+{{- end }}
+{{- if .On "n8n-runners" }}
+  N8N_RUNNERS_MODE: external
+  N8N_RUNNERS_AUTH_TOKEN: ${N8N_RUNNERS_AUTH_TOKEN}
+  N8N_RUNNERS_BROKER_LISTEN_ADDRESS: 0.0.0.0
+{{- end }}
+volumes:
+  - n8n_data:/home/node/.n8n
+healthcheck:
+  test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:5678/healthz/readiness',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"]
+  interval: 30s
+  timeout: 10s
+  retries: 5
+  start_period: 60s
+{{ end }}
+
+{{ define "n8n-runners" -}}
+image: docker.io/n8nio/runners:2.39.8
+environment:
+  <<: *userland-environment
+  N8N_RUNNERS_TASK_BROKER_URI: http://n8n:5679
+  N8N_RUNNERS_AUTH_TOKEN: ${N8N_RUNNERS_AUTH_TOKEN}
+  GENERIC_TIMEZONE: ${GENERIC_TIMEZONE:-UTC}
+{{ end }}

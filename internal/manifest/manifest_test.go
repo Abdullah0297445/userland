@@ -39,7 +39,7 @@ func TestProductOrderOnTheRealManifest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"metabase", "postgres", "traefik"}
+	want := []string{"metabase", "n8n", "postgres", "traefik"}
 	if got := m.ProductOrder(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("order %v, want %v", got, want)
 	}
@@ -54,6 +54,9 @@ func TestLoadRefusesBadAsks(t *testing.T) {
 		"bad rename":             `{"products": {"p": {"containers": {"c": {"renamed": {"old": "NEW"}}}}}}`,
 		"bad removed":            `{"products": {"p": {"containers": {"c": {"removed": ["x-y"]}}}}}`,
 		"bad password var":       `{"products": {"p": {"containers": {"c": {"postgres": {"database": "c", "password": "c_pw"}}}}}}`,
+		"bad setting name":       `{"products": {"p": {"containers": {"c": {"postgres": {"database": "c", "password": "C_PW", "settings": {"Statement Timeout": "5min"}}}}}}}`,
+		"empty setting":          `{"products": {"p": {"containers": {"c": {"postgres": {"database": "c", "password": "C_PW", "settings": {"statement_timeout": ""}}}}}}}`,
+		"settings disagree":      `{"products": {"p": {"containers": {"a": {"postgres": {"database": "c", "password": "C_PW", "settings": {"statement_timeout": "5min"}}}, "b": {"postgres": {"database": "c", "password": "C_PW"}}}}}}`,
 	}
 	for name, body := range cases {
 		if _, err := load(t, body); err == nil || !strings.HasPrefix(err.Error(), "manifest.json: ") {

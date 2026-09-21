@@ -102,12 +102,13 @@ func checkTemplateBodies(r *Report, m *manifest.Manifest, templates *render.Temp
 	}
 	var bodies []body
 	clean := true
+	all := render.Set(m.Names())
 	for _, c := range m.All() {
 		if !templates.Has(c.Name) {
 			continue
 		}
 		for _, visibility := range Visibilities {
-			text, err := templates.Body(c, visibility)
+			text, err := templates.Body(c, visibility, all)
 			if err != nil {
 				r.fail("template %s (%s): %v", c.Name, visibility, err)
 				clean = false

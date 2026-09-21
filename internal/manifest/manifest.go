@@ -3,6 +3,7 @@ package manifest
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"regexp"
 	"sort"
@@ -38,8 +39,9 @@ type HTTP struct {
 }
 
 type Database struct {
-	Database string `json:"database"`
-	Password string `json:"password"`
+	Database string            `json:"database"`
+	Password string            `json:"password"`
+	Settings map[string]string `json:"settings"`
 }
 
 type Ask struct {
@@ -69,6 +71,7 @@ var (
 	identifierPattern = regexp.MustCompile(`^[a-z][a-z0-9_]{0,62}$`)
 	variablePattern   = regexp.MustCompile(`^[A-Z][A-Z0-9_]*$`)
 	namePattern       = regexp.MustCompile(`^[a-z][a-z0-9-]{0,62}$`)
+	settingPattern    = regexp.MustCompile(`^[a-z_][a-z0-9_]*(\.[a-z_][a-z0-9_]*)?$`)
 )
 
 func ValidIdentifier(s string) bool { return identifierPattern.MatchString(s) }
@@ -76,6 +79,8 @@ func ValidIdentifier(s string) bool { return identifierPattern.MatchString(s) }
 func ValidVariable(s string) bool { return variablePattern.MatchString(s) }
 
 func ValidName(s string) bool { return namePattern.MatchString(s) }
+
+func ValidSetting(s string) bool { return settingPattern.MatchString(s) }
 
 func (a Ask) Applies(visibility string, value func(string) string) bool {
 	switch a.When {
@@ -135,6 +140,14 @@ func Parse(raw []byte) (*Manifest, error) {
 				if !ValidVariable(c.Postgres.Password) {
 					return nil, fmt.Errorf("manifest.json: %s names its database password %q, which is not a variable name", name, c.Postgres.Password)
 				}
+				for setting, value := range c.Postgres.Settings {
+					if !ValidSetting(setting) {
+						return nil, fmt.Errorf("manifest.json: %s sets %q on its Postgres user, which is not a setting name", name, setting)
+					}
+					if value == "" {
+						return nil, fmt.Errorf("manifest.json: %s sets %s on its Postgres user to nothing", name, setting)
+					}
+				}
 			}
 			if err := c.checkAsks(); err != nil {
 				return nil, err
@@ -143,7 +156,14 @@ func Parse(raw []byte) (*Manifest, error) {
 	}
 	volumes := map[string]string{}
 	hostPorts := map[int]string{}
+	databases := map[string]*Container{}
 	for _, c := range m.All() {
+		if c.Postgres != nil {
+			if other, shared := databases[c.Postgres.Database]; shared && !maps.Equal(other.Postgres.Settings, c.Postgres.Settings) {
+				return nil, fmt.Errorf("manifest.json: %s and %s share the database %s but set different settings on its user", other.Name, c.Name, c.Postgres.Database)
+			}
+			databases[c.Postgres.Database] = c
+		}
 		for _, dep := range append(append([]string{}, c.Requires...), c.Optional...) {
 			if m.Container(dep) == nil {
 				return nil, fmt.Errorf("manifest.json: %s depends on %q, which no product has", c.Name, dep)

@@ -41,6 +41,11 @@ type data struct {
 	Visibility string
 	Postgres   *manifest.Database
 	HTTP       *manifest.HTTP
+	on         map[string]bool
+}
+
+func (d data) On(name string) bool {
+	return d.on[name]
 }
 
 func Load(root string) (*Templates, error) {
@@ -67,12 +72,12 @@ func (t *Templates) Has(name string) bool {
 	return t.set.Lookup(name) != nil
 }
 
-func (t *Templates) Body(c *manifest.Container, visibility string) (string, error) {
+func (t *Templates) Body(c *manifest.Container, visibility string, on map[string]bool) (string, error) {
 	if !t.Has(c.Name) {
 		return "", fmt.Errorf("compose/%s.yml defines no template %q", c.Product, c.Name)
 	}
 	var body bytes.Buffer
-	if err := t.set.ExecuteTemplate(&body, c.Name, data{c.Name, c.Product, visibility, c.Postgres, c.HTTP}); err != nil {
+	if err := t.set.ExecuteTemplate(&body, c.Name, data{c.Name, c.Product, visibility, c.Postgres, c.HTTP, on}); err != nil {
 		return "", err
 	}
 	var lines []string
@@ -89,10 +94,7 @@ func Render(in Input) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	on := map[string]bool{}
-	for _, name := range in.On {
-		on[name] = true
-	}
+	on := Set(in.On)
 	var b strings.Builder
 	fmt.Fprintf(&b, "name: %s\n\nx-%s: &%s\n  TZ: UTC\n\nservices:\n", Project, Anchor, Anchor)
 	networks := map[string]bool{}
@@ -101,7 +103,7 @@ func Render(in Input) ([]byte, error) {
 		if !on[c.Name] {
 			continue
 		}
-		body, err := templates.Body(c, in.Visibility)
+		body, err := templates.Body(c, in.Visibility, on)
 		if err != nil {
 			return nil, err
 		}
@@ -184,6 +186,14 @@ func Render(in Input) ([]byte, error) {
 		}
 	}
 	return []byte(b.String()), nil
+}
+
+func Set(names []string) map[string]bool {
+	set := map[string]bool{}
+	for _, name := range names {
+		set[name] = true
+	}
+	return set
 }
 
 func Network(product string) string {

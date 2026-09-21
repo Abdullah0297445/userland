@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"os/exec"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -93,8 +94,57 @@ func Databases(m *manifest.Manifest, on []string, e *env.File) ([]string, error)
 		if err != nil {
 			return report, err
 		}
+		steps, err = settings(c.Postgres.Database, c.Postgres.Settings)
+		report = append(report, steps...)
+		if err != nil {
+			return report, err
+		}
 	}
 	return report, nil
+}
+
+func settings(name string, want map[string]string) ([]string, error) {
+	var did []string
+	if len(want) == 0 {
+		return did, nil
+	}
+	have, err := roleSettings(name)
+	if err != nil {
+		return did, err
+	}
+	names := make([]string, 0, len(want))
+	for setting := range want {
+		names = append(names, setting)
+	}
+	sort.Strings(names)
+	for _, setting := range names {
+		if have[setting] == want[setting] {
+			continue
+		}
+		if err := run("postgres", fmt.Sprintf("ALTER ROLE %s SET %s = %s", ident(name), setting, literal(want[setting]))); err != nil {
+			return did, err
+		}
+		did = append(did, fmt.Sprintf("set %s = %s on the user %s", setting, want[setting], name))
+	}
+	return did, nil
+}
+
+func roleSettings(name string) (map[string]string, error) {
+	out, err := query("postgres", "SELECT unnest(setconfig) FROM pg_db_role_setting WHERE setdatabase = 0 AND setrole = (SELECT oid FROM pg_roles WHERE rolname = "+literal(name)+")")
+	if err != nil {
+		return nil, err
+	}
+	return parseSettings(out), nil
+}
+
+func parseSettings(lines string) map[string]string {
+	have := map[string]string{}
+	for _, line := range strings.Split(lines, "\n") {
+		if setting, value, ok := strings.Cut(line, "="); ok {
+			have[setting] = value
+		}
+	}
+	return have
 }
 
 func converge(name, password string) ([]string, error) {

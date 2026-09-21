@@ -25,6 +25,26 @@ An asked variable is collected by the interview when its container is switched o
 | `MB_AGGREGATED_QUERY_ROW_LIMIT` | optional |  |  | Read by the template; defaults to `10000`. |
 | `MB_UNAGGREGATED_QUERY_ROW_LIMIT` | optional |  |  | Read by the template; defaults to `2000`. |
 
+## n8n
+
+### n8n
+
+| Variable | Kind | When | Keep | Meaning |
+|---|---|---|---|---|
+| `N8N_ENCRYPTION_KEY` | generated | always | yes | Key n8n encrypts saved credentials with |
+| `N8N_DB_PASSWORD` | generated | always |  | Password of the `n8n` user on Postgres, which owns the `n8n` database. Provisioning converges it to whatever this holds. |
+| `N8N_PORT` | optional |  |  | Loopback port to publish on while traefik is on; nothing is published unless it is set. With traefik off the container publishes on `127.0.0.1:5678` regardless. |
+| `N8N_MEM_LIMIT` | optional |  |  | Memory limit in compose's units, such as `2g`. Unbounded unless set. |
+| `GENERIC_TIMEZONE` | optional |  |  | Read by the template; defaults to `UTC`. |
+
+### n8n-runners
+
+| Variable | Kind | When | Keep | Meaning |
+|---|---|---|---|---|
+| `N8N_RUNNERS_AUTH_TOKEN` | generated | always |  | Shared secret between n8n and its runners |
+| `N8N_RUNNERS_MEM_LIMIT` | optional |  |  | Memory limit in compose's units, such as `2g`. Unbounded unless set. |
+| `GENERIC_TIMEZONE` | optional |  |  | Read by the template; defaults to `UTC`. |
+
 ## postgres
 
 ### pgbouncer-session
