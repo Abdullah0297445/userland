@@ -161,7 +161,7 @@ _Avoid_: tenant, role (for this), account, owner (as its name)
 
 **Superuser**:
 The single Postgres superuser that provisions databases and runs the backup. No other user
-holds it.
+holds it. On ClickHouse the same seat is the user `default`, which provisioning alone uses.
 _Avoid_: engine superuser, admin, root, postgres user
 
 **Door**:

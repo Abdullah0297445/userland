@@ -2,6 +2,7 @@ package provision
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -13,5 +14,18 @@ func TestParseSettingsReadsOneSettingPerLine(t *testing.T) {
 	}
 	if got := parseSettings(""); len(got) != 0 {
 		t.Fatalf("no rows should parse to no settings, got %v", got)
+	}
+}
+
+func TestClickHouseGrantsStayInsideTheDatabaseAndTheSystemTablesLangfuseReads(t *testing.T) {
+	for _, g := range clickhouseGrants("probe") {
+		inside := strings.Contains(g, ` ON "probe".* TO "probe"`)
+		system := strings.Contains(g, " ON system.") && strings.HasSuffix(g, ` TO "probe"`)
+		if !inside && !system {
+			t.Errorf("grant reaches outside the database: %s", g)
+		}
+	}
+	if got := clickhouseLiteral(`it's a \ back`); got != `'it\'s a \\ back'` {
+		t.Fatalf("literal: %s", got)
 	}
 }

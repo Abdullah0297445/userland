@@ -149,11 +149,8 @@ func checkTemplateBodies(r *Report, m *manifest.Manifest, templates *render.Temp
 func checkReferences(r *Report, m *manifest.Manifest, bodies []body) {
 	known := map[string]bool{}
 	for _, c := range m.All() {
-		for _, a := range c.Asks {
+		for _, a := range c.AllAsks() {
 			known[a.Var] = true
-		}
-		if c.Postgres != nil {
-			known[c.Postgres.Password] = true
 		}
 	}
 	clean := true

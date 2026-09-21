@@ -33,6 +33,16 @@
         }
       }
     },
+    "clickhouse": {
+      "containers": {
+        "clickhouse": {
+          "volumes": ["clickhouse_data"],
+          "asks": [
+            {"var": "CLICKHOUSE_PASSWORD", "type": "generated", "prompt": "Password of the ClickHouse admin user, default"}
+          ]
+        }
+      }
+    },
     "metabase": {
       "containers": {
         "metabase": {

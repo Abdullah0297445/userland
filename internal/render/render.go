@@ -40,6 +40,7 @@ type data struct {
 	Product    string
 	Visibility string
 	Postgres   *manifest.Database
+	ClickHouse *manifest.Database
 	HTTP       *manifest.HTTP
 	on         map[string]bool
 }
@@ -77,7 +78,7 @@ func (t *Templates) Body(c *manifest.Container, visibility string, on map[string
 		return "", fmt.Errorf("compose/%s.yml defines no template %q", c.Product, c.Name)
 	}
 	var body bytes.Buffer
-	if err := t.set.ExecuteTemplate(&body, c.Name, data{c.Name, c.Product, visibility, c.Postgres, c.HTTP, on}); err != nil {
+	if err := t.set.ExecuteTemplate(&body, c.Name, data{c.Name, c.Product, visibility, c.Postgres, c.ClickHouse, c.HTTP, on}); err != nil {
 		return "", err
 	}
 	var lines []string

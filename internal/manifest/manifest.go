@@ -19,17 +19,18 @@ type Product struct {
 }
 
 type Container struct {
-	Name     string            `json:"-"`
-	Product  string            `json:"-"`
-	Requires []string          `json:"requires"`
-	Optional []string          `json:"optional"`
-	HTTP     *HTTP             `json:"http"`
-	Postgres *Database         `json:"postgres"`
-	Ports    []int             `json:"ports"`
-	Volumes  []string          `json:"volumes"`
-	Asks     []Ask             `json:"asks"`
-	Renamed  map[string]string `json:"renamed"`
-	Removed  []string          `json:"removed"`
+	Name       string            `json:"-"`
+	Product    string            `json:"-"`
+	Requires   []string          `json:"requires"`
+	Optional   []string          `json:"optional"`
+	HTTP       *HTTP             `json:"http"`
+	Postgres   *Database         `json:"postgres"`
+	ClickHouse *Database         `json:"clickhouse"`
+	Ports      []int             `json:"ports"`
+	Volumes    []string          `json:"volumes"`
+	Asks       []Ask             `json:"asks"`
+	Renamed    map[string]string `json:"renamed"`
+	Removed    []string          `json:"removed"`
 }
 
 type HTTP struct {
@@ -149,6 +150,20 @@ func Parse(raw []byte) (*Manifest, error) {
 					}
 				}
 			}
+			if c.ClickHouse != nil {
+				if !ValidIdentifier(c.ClickHouse.Database) {
+					return nil, fmt.Errorf("manifest.json: database %q of %s is not a valid ClickHouse identifier", c.ClickHouse.Database, name)
+				}
+				if !ValidVariable(c.ClickHouse.Password) {
+					return nil, fmt.Errorf("manifest.json: %s names its ClickHouse password %q, which is not a variable name", name, c.ClickHouse.Password)
+				}
+				if len(c.ClickHouse.Settings) > 0 {
+					return nil, fmt.Errorf("manifest.json: %s sets settings on its ClickHouse user; settings are Postgres's", name)
+				}
+				if c.Postgres != nil && c.Postgres.Password == c.ClickHouse.Password {
+					return nil, fmt.Errorf("manifest.json: %s names %s as both its Postgres and its ClickHouse password", name, c.Postgres.Password)
+				}
+			}
 			if err := c.checkAsks(); err != nil {
 				return nil, err
 			}
@@ -216,19 +231,19 @@ func (c *Container) checkAsks() error {
 	return nil
 }
 
-func (c *Container) PasswordAsk() (Ask, bool) {
-	if c.Postgres == nil {
-		return Ask{}, false
+func (c *Container) PasswordAsks() []Ask {
+	var asks []Ask
+	if c.Postgres != nil {
+		asks = append(asks, Ask{Var: c.Postgres.Password, Type: Generated, Prompt: fmt.Sprintf("Password of the %s user on Postgres", c.Postgres.Database)})
 	}
-	return Ask{Var: c.Postgres.Password, Type: Generated, Prompt: fmt.Sprintf("Password of the %s user on Postgres", c.Postgres.Database)}, true
+	if c.ClickHouse != nil {
+		asks = append(asks, Ask{Var: c.ClickHouse.Password, Type: Generated, Prompt: fmt.Sprintf("Password of the %s user on ClickHouse", c.ClickHouse.Database)})
+	}
+	return asks
 }
 
 func (c *Container) AllAsks() []Ask {
-	asks := append([]Ask{}, c.Asks...)
-	if a, ok := c.PasswordAsk(); ok {
-		asks = append(asks, a)
-	}
-	return asks
+	return append(append([]Ask{}, c.Asks...), c.PasswordAsks()...)
 }
 
 func (m *Manifest) Container(name string) *Container {
@@ -250,11 +265,21 @@ func (m *Manifest) Database(database string) *Container {
 }
 
 func (m *Manifest) SharesDatabase(c *Container, on []string) bool {
-	if c.Postgres == nil {
+	return m.shares(c, on, func(x *Container) *Database { return x.Postgres })
+}
+
+func (m *Manifest) SharesClickHouse(c *Container, on []string) bool {
+	return m.shares(c, on, func(x *Container) *Database { return x.ClickHouse })
+}
+
+func (m *Manifest) shares(c *Container, on []string, of func(*Container) *Database) bool {
+	mine := of(c)
+	if mine == nil {
 		return false
 	}
 	for _, other := range m.All() {
-		if other.Name != c.Name && other.Postgres != nil && other.Postgres.Database == c.Postgres.Database && contains(on, other.Name) {
+		theirs := of(other)
+		if other.Name != c.Name && theirs != nil && theirs.Database == mine.Database && contains(on, other.Name) {
 			return true
 		}
 	}
@@ -411,6 +436,9 @@ func (m *Manifest) Validate(on []string) Verdict {
 		}
 		if c.Postgres != nil && !set[Postgres] {
 			v.Refusals = append(v.Refusals, fmt.Sprintf("%s has a database on Postgres, so %s must be on", c.Name, Postgres))
+		}
+		if c.ClickHouse != nil && !set[ClickHouse] {
+			v.Refusals = append(v.Refusals, fmt.Sprintf("%s has a database on ClickHouse, so %s must be on", c.Name, ClickHouse))
 		}
 		for _, o := range c.Optional {
 			if !set[o] {

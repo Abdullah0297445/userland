@@ -39,7 +39,7 @@ func TestProductOrderOnTheRealManifest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"metabase", "n8n", "postgres", "traefik"}
+	want := []string{"clickhouse", "metabase", "n8n", "postgres", "traefik"}
 	if got := m.ProductOrder(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("order %v, want %v", got, want)
 	}
@@ -47,16 +47,20 @@ func TestProductOrderOnTheRealManifest(t *testing.T) {
 
 func TestLoadRefusesBadAsks(t *testing.T) {
 	cases := map[string]string{
-		"unknown type":           `{"products": {"p": {"containers": {"c": {"asks": [{"var": "X", "type": "number"}]}}}}}`,
-		"choice without options": `{"products": {"p": {"containers": {"c": {"asks": [{"var": "X", "type": "choice"}]}}}}}`,
-		"bad when":               `{"products": {"p": {"containers": {"c": {"asks": [{"var": "X", "type": "text", "when": "sometimes"}]}}}}}`,
-		"lowercase var":          `{"products": {"p": {"containers": {"c": {"asks": [{"var": "x", "type": "text"}]}}}}}`,
-		"bad rename":             `{"products": {"p": {"containers": {"c": {"renamed": {"old": "NEW"}}}}}}`,
-		"bad removed":            `{"products": {"p": {"containers": {"c": {"removed": ["x-y"]}}}}}`,
-		"bad password var":       `{"products": {"p": {"containers": {"c": {"postgres": {"database": "c", "password": "c_pw"}}}}}}`,
-		"bad setting name":       `{"products": {"p": {"containers": {"c": {"postgres": {"database": "c", "password": "C_PW", "settings": {"Statement Timeout": "5min"}}}}}}}`,
-		"empty setting":          `{"products": {"p": {"containers": {"c": {"postgres": {"database": "c", "password": "C_PW", "settings": {"statement_timeout": ""}}}}}}}`,
-		"settings disagree":      `{"products": {"p": {"containers": {"a": {"postgres": {"database": "c", "password": "C_PW", "settings": {"statement_timeout": "5min"}}}, "b": {"postgres": {"database": "c", "password": "C_PW"}}}}}}`,
+		"unknown type":            `{"products": {"p": {"containers": {"c": {"asks": [{"var": "X", "type": "number"}]}}}}}`,
+		"choice without options":  `{"products": {"p": {"containers": {"c": {"asks": [{"var": "X", "type": "choice"}]}}}}}`,
+		"bad when":                `{"products": {"p": {"containers": {"c": {"asks": [{"var": "X", "type": "text", "when": "sometimes"}]}}}}}`,
+		"lowercase var":           `{"products": {"p": {"containers": {"c": {"asks": [{"var": "x", "type": "text"}]}}}}}`,
+		"bad rename":              `{"products": {"p": {"containers": {"c": {"renamed": {"old": "NEW"}}}}}}`,
+		"bad removed":             `{"products": {"p": {"containers": {"c": {"removed": ["x-y"]}}}}}`,
+		"bad password var":        `{"products": {"p": {"containers": {"c": {"postgres": {"database": "c", "password": "c_pw"}}}}}}`,
+		"bad setting name":        `{"products": {"p": {"containers": {"c": {"postgres": {"database": "c", "password": "C_PW", "settings": {"Statement Timeout": "5min"}}}}}}}`,
+		"empty setting":           `{"products": {"p": {"containers": {"c": {"postgres": {"database": "c", "password": "C_PW", "settings": {"statement_timeout": ""}}}}}}}`,
+		"settings disagree":       `{"products": {"p": {"containers": {"a": {"postgres": {"database": "c", "password": "C_PW", "settings": {"statement_timeout": "5min"}}}, "b": {"postgres": {"database": "c", "password": "C_PW"}}}}}}`,
+		"clickhouse bad database": `{"products": {"p": {"containers": {"c": {"clickhouse": {"database": "1c", "password": "C_PW"}}}}}}`,
+		"clickhouse bad password": `{"products": {"p": {"containers": {"c": {"clickhouse": {"database": "c", "password": "c_pw"}}}}}}`,
+		"clickhouse settings":     `{"products": {"p": {"containers": {"c": {"clickhouse": {"database": "c", "password": "C_PW", "settings": {"x": "1"}}}}}}}`,
+		"one variable two stores": `{"products": {"p": {"containers": {"c": {"postgres": {"database": "c", "password": "C_PW"}, "clickhouse": {"database": "c", "password": "C_PW"}}}}}}`,
 	}
 	for name, body := range cases {
 		if _, err := load(t, body); err == nil || !strings.HasPrefix(err.Error(), "manifest.json: ") {
@@ -105,6 +109,41 @@ func TestAskForFindsAskedAndImpliedVariables(t *testing.T) {
 	}
 	if (Ask{When: "public"}).Condition() != "visibility is public" || (Ask{}).Condition() != "always" {
 		t.Fatal("conditions read wrong")
+	}
+}
+
+func TestClickHouseDatabaseIsAskedRefusedAndShared(t *testing.T) {
+	m, err := load(t, `{"products": {
+		"clickhouse": {"containers": {"clickhouse": {}}},
+		"postgres": {"containers": {"postgres-18": {}}},
+		"langfuse": {"containers": {
+			"langfuse-web": {"postgres": {"database": "langfuse", "password": "LANGFUSE_DB_PASSWORD"}, "clickhouse": {"database": "langfuse", "password": "LANGFUSE_CH_PASSWORD"}},
+			"langfuse-worker": {"requires": ["langfuse-web"], "clickhouse": {"database": "langfuse", "password": "LANGFUSE_CH_PASSWORD"}}
+		}}
+	}}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	web := m.Container("langfuse-web")
+	var vars []string
+	for _, a := range web.AllAsks() {
+		vars = append(vars, a.Var+":"+a.Type)
+	}
+	if !reflect.DeepEqual(vars, []string{"LANGFUSE_DB_PASSWORD:generated", "LANGFUSE_CH_PASSWORD:generated"}) {
+		t.Fatalf("asks: %v", vars)
+	}
+	if c, _, ok := m.AskFor("LANGFUSE_CH_PASSWORD"); !ok || c.Name != "langfuse-web" {
+		t.Fatal("the ClickHouse password is an implied ask")
+	}
+	v := m.Validate([]string{"langfuse-web", "postgres-18"})
+	if len(v.Refusals) != 1 || !strings.Contains(v.Refusals[0], "database on ClickHouse, so clickhouse must be on") {
+		t.Fatalf("refusals: %v", v.Refusals)
+	}
+	if v := m.Validate([]string{"langfuse-web", "postgres-18", "clickhouse"}); len(v.Refusals) != 0 {
+		t.Fatalf("refusals with both stores on: %v", v.Refusals)
+	}
+	if !m.SharesClickHouse(web, []string{"langfuse-worker"}) || m.SharesClickHouse(web, nil) || m.SharesDatabase(web, []string{"langfuse-worker"}) {
+		t.Fatal("sharing is per store")
 	}
 }
 

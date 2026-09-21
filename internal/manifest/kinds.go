@@ -5,4 +5,5 @@ const (
 	Postgres        = "postgres-18"
 	TransactionDoor = "pgbouncer-transaction"
 	SessionDoor     = "pgbouncer-session"
+	ClickHouse      = "clickhouse"
 )

@@ -95,6 +95,7 @@ func TestLabelNamesWhoNeedsIt(t *testing.T) {
 		got[c.Name] = label(m, c)
 	}
 	want := map[string]string{
+		"clickhouse":            "clickhouse",
 		"metabase":              "metabase",
 		"n8n":                   "n8n: required by n8n-runners",
 		"n8n-runners":           "n8n-runners: optional for n8n",

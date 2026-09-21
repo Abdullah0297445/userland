@@ -9,8 +9,8 @@ There is no application code here. userland is the ground your own projects stan
 and it is deliberately not one of them.
 
 > **This repo is being built in the open.** Today the interview writes `.env`, every verb
-> exists, and userland renders and runs traefik, Postgres with its doors, Metabase and n8n.
-> The other containers arrive one at a time. The design is published as issues on this repo as
+> exists, and userland renders and runs traefik, Postgres with its doors, ClickHouse, Metabase
+> and n8n. The other containers arrive one at a time. The design is published as issues on this repo as
 > it is settled.
 
 `userland` is the part of a running system that is not the kernel: everything the machine
@@ -95,7 +95,7 @@ interview never asks again for what is already there.
 | `./bootstrap postgres database remove NAME` | Drop a consumer's database and its users, after asking. |
 | `./bootstrap apply` | Render, bring up, provision, print. |
 | `./bootstrap render` | Write `compose.yml` and stop. |
-| `./bootstrap provision` | Converge the door's auth user and every switched-on database, and nothing else. |
+| `./bootstrap provision` | Converge the door's auth user and every switched-on database, on Postgres and ClickHouse, and nothing else. |
 | `./bootstrap new PRODUCT CONTAINER…` | For contributors: append a product to `manifest.json` and write its template, with placeholders. |
 | `./bootstrap check [--write]` | Assert the manifest and templates hold. `--write` regenerates `VARIABLES.md`. |
 
@@ -110,7 +110,8 @@ first and defaults to no.
    dependency is off. A missing optional dependency is a warning.
 2. Renders `compose.yml`. Only switched-on containers are in it, every value is a `${VAR}`
    reference, and there are no profiles.
-3. If Postgres is on, brings it up alone and waits for it to be healthy, then provisions.
+3. If Postgres or ClickHouse is on, brings them up first and waits for them to be healthy,
+   then provisions.
 4. Brings up everything else with `--remove-orphans`. A container absent from the file is
    an orphan, so switching it off is enough to remove it; its volume and its database stay.
 5. Prints the URL of everything that answers HTTP and the `.env` lines you must copy off
@@ -125,7 +126,7 @@ published ports change. That is expected and loses nothing.
 and offers to reclaim them. Decline, and `reclaim CONTAINER` drops them later, after naming
 them again and asking. A database shared with a container that is still on is not offered.
 Reclaiming `postgres-18` drops its volume, and every database on Postgres lives in it, which
-the question says. The product's network stays until `docker compose down`; it costs
+the question says; `clickhouse` and its volume the same. The product's network stays until `docker compose down`; it costs
 nothing.
 
 There is no verb that switches everything off: an empty selection is a refusal. To stop
@@ -191,6 +192,46 @@ A password is compared with the user's stored SCRAM verifier and changed only wh
 differ, so a re-run changes nothing, a hand-edited or restored `.env` heals itself, and
 rotating a password is one edit plus an apply. Passwords travel on stdin, never on a
 command line. Nothing is ever dropped.
+
+On ClickHouse the same, through `docker exec clickhouse clickhouse-client` as the admin user
+`default`, whose password the image itself rewrites from `.env` on every start: each
+switched-on container's database and user, and the grants under *ClickHouse* below, added
+only when `SHOW GRANTS` would change. ClickHouse keeps no hash a program can recompute, so a
+password is checked by logging in as the user, which fails for real there, and set only when
+the login fails. The client reads its password from its environment, so none is on a command
+line.
+
+## ClickHouse
+
+userland runs ClickHouse as one container. langfuse calls that development-only, because one
+box has no redundancy. Every event langfuse ingests is written to your bucket first, and
+Postgres holds everything you configure; ClickHouse holds what you see in the UI. A backup of
+its volume is not here yet.
+
+The image is `clickhouse/clickhouse-server:26.8`, the long-term-support line after the 26.4
+that langfuse recommends, and it moves within that line. The container runs at ClickHouse's
+own defaults, in UTC, which langfuse requires, with the one setting the image documents,
+`nofile 262144`. `CLICKHOUSE_PASSWORD` is the admin user `default`, which provisioning uses
+and no product does; the image turns on access management for it, so it may create users.
+
+**Every product gets its own database and user on ClickHouse, made by provisioning, exactly
+as on Postgres.** The template holds nothing product-specific, and the image's `CLICKHOUSE_DB`
+is not used: it acts only on a first start with an empty volume, and would put a product's
+name in the central template. The user is named as its database and holds, on that database
+alone, what langfuse documents its user needs: `SELECT`, `INSERT`, `ALTER UPDATE`,
+`ALTER DELETE`, `CREATE`, `DROP TABLE`, `DROP VIEW`, the column, index and view `ALTER`s,
+`SYSTEM SYNC REPLICA`, `SYSTEM MERGES` and `ALTER SETTINGS`; and `SELECT` on the columns of
+`system.parts`, `system.mutations` and `system.tables` it reads, on `system.processes` and on
+`system.query_log*`. It cannot read another database, make one, or make a user.
+
+**ClickHouse is the heaviest container here.** `CLICKHOUSE_MEM_LIMIT` in `.env` is where a cap
+goes: ClickHouse reads the cgroup limit and keeps its own ceiling at nine tenths of it, so a
+compose limit is one it respects rather than one it dies against. No number is written here.
+
+ClickHouse logs at trace level to files inside the container, in `/var/log/clickhouse-server`,
+rotated by the image; `docker logs clickhouse` shows only the entrypoint. Nothing is published
+on the host: products reach it on `userland_clickhouse`, ports 8123 for HTTP and 9000 for the
+native protocol, and you reach it with `docker exec clickhouse clickhouse-client`.
 
 ## n8n
 
@@ -351,6 +392,7 @@ is missing as you fill them in.
 | `requires` / `optional` | Containers this one depends on. A missing required one is a refusal; a missing optional one is a warning. `depends_on` is emitted from `requires`, with `condition: service_healthy`. |
 | `http` | `container` port, `host` loopback port, and `subdomain` (defaults to the name). Drives the traefik labels and the `ports` block. |
 | `postgres` | The `database` this container gets on Postgres, which is also its user's name, and the `.env` variable holding its `password`. Two containers naming one database share it, and must name the same `settings`. It implies `postgres-18` is on. Optional `settings`, as `{"statement_timeout": "5min"}`, are Postgres settings provisioning puts on the user with `ALTER ROLE … SET`, so they reach every connection regardless of the door. |
+| `clickhouse` | The `database` this container gets on ClickHouse, also its user's name, and the `.env` variable holding its `password`; a different variable from the Postgres one. Two containers naming one database share it. It implies `clickhouse` is on. No `settings`. |
 | `ports` | Ports published on every interface. traefik alone. |
 | `volumes` | Named volumes this container mounts. The top-level `volumes` block, "left behind" and `reclaim` all read this. |
 | `asks` | `var`, `type`, `prompt`, optional `when` (`public`, `local` or `VAR=value`) and `keep`. Types: `text hostname email url port secret generated choice paths`, described under *The interview*. |
@@ -365,8 +407,8 @@ is missing as you fill them in.
 - `environment` opens with `<<: *userland-environment`. That merge line is how `TZ=UTC`
   reaches every container from one anchor the generator emits.
 - The template reads the manifest rather than repeating it: `.Name`, `.Product`,
-  `.Visibility`, `.Postgres` and `.HTTP` are in scope, and `{{ ref "VAR" }}` renders
-  `${VAR}`. Never write a value where a reference will do.
+  `.Visibility`, `.Postgres`, `.ClickHouse` and `.HTTP` are in scope, and `{{ ref "VAR" }}`
+  renders `${VAR}`. Never write a value where a reference will do.
 - `.On "traefik"` says whether another container is in the selection, so a template can
   follow it: n8n points at its runners only while they are on, and sets its URLs only while
   traefik is.
@@ -379,11 +421,11 @@ is missing as you fill them in.
 
 ### Names the CLI knows
 
-Five names are kinds the CLI defines rather than manifest data: `traefik`, whose
+Six names are kinds the CLI defines rather than manifest data: `traefik`, whose
 presence decides labels and loopback ports; `postgres-18`, which provisioning execs into
-and which every container with a database requires; `pgbouncer-transaction` and
-`pgbouncer-session`, the two doors the Contract names; and `pgbouncer_auth`, the user both
-doors look passwords up with.
+and which every container with a Postgres database requires; `clickhouse`, the same for a
+ClickHouse database; `pgbouncer-transaction` and `pgbouncer-session`, the two doors the
+Contract names; and `pgbouncer_auth`, the user both doors look passwords up with.
 
 ## Notes
 

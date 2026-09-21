@@ -379,3 +379,176 @@ func ident(name string) string {
 func literal(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", "''") + "'"
 }
+
+const (
+	clickhouse      = manifest.ClickHouse
+	ClickHouseAdmin = "default"
+)
+
+func ClickHouse(m *manifest.Manifest, on []string, e *env.File) ([]string, error) {
+	set := map[string]bool{}
+	for _, name := range on {
+		set[name] = true
+	}
+	seen := map[string]bool{}
+	var report []string
+	for _, c := range m.All() {
+		if !set[c.Name] || c.ClickHouse == nil || seen[c.ClickHouse.Database] {
+			continue
+		}
+		seen[c.ClickHouse.Database] = true
+		password := e.Get(c.ClickHouse.Password)
+		if password == "" {
+			return report, fmt.Errorf("database %s on ClickHouse: .env lacks %s", c.ClickHouse.Database, c.ClickHouse.Password)
+		}
+		steps, err := convergeClickHouse(c.ClickHouse.Database, password)
+		report = append(report, steps...)
+		if err != nil {
+			return report, err
+		}
+	}
+	return report, nil
+}
+
+func convergeClickHouse(name, password string) ([]string, error) {
+	var did []string
+	db, err := clickhouseQuery("SELECT count() FROM system.databases WHERE name = " + clickhouseLiteral(name))
+	if err != nil {
+		return did, err
+	}
+	if db != "1" {
+		if err := clickhouseRun("CREATE DATABASE IF NOT EXISTS " + ident(name)); err != nil {
+			return did, err
+		}
+		did = append(did, "created database "+name+" on ClickHouse")
+	}
+	user, err := clickhouseQuery("SELECT count() FROM system.users WHERE name = " + clickhouseLiteral(name))
+	if err != nil {
+		return did, err
+	}
+	if user != "1" {
+		if err := clickhouseRun(fmt.Sprintf("CREATE USER IF NOT EXISTS %s IDENTIFIED BY %s", ident(name), clickhouseLiteral(password))); err != nil {
+			return did, err
+		}
+		did = append(did, "created user "+name+" on ClickHouse")
+	} else {
+		ok, err := clickhouseLogin(name, password)
+		if err != nil {
+			return did, err
+		}
+		if !ok {
+			if err := clickhouseRun(fmt.Sprintf("ALTER USER %s IDENTIFIED BY %s", ident(name), clickhouseLiteral(password))); err != nil {
+				return did, err
+			}
+			did = append(did, "set the password of "+name+" on ClickHouse from .env")
+		}
+	}
+	before, err := clickhouseQuery("SHOW GRANTS FOR " + ident(name))
+	if err != nil {
+		return did, err
+	}
+	if err := clickhouseRun(strings.Join(clickhouseGrants(name), ";\n")); err != nil {
+		return did, err
+	}
+	after, err := clickhouseQuery("SHOW GRANTS FOR " + ident(name))
+	if err != nil {
+		return did, err
+	}
+	if before != after {
+		did = append(did, "granted "+name+" its database on ClickHouse")
+	}
+	if len(did) == 0 {
+		did = append(did, "database "+name+" on ClickHouse unchanged")
+	}
+	return did, nil
+}
+
+func clickhouseGrants(name string) []string {
+	scope := " ON " + ident(name) + ".* TO " + ident(name)
+	system := " TO " + ident(name)
+	return []string{
+		"GRANT SELECT, INSERT" + scope,
+		"GRANT ALTER UPDATE, ALTER DELETE" + scope,
+		"GRANT CREATE, DROP TABLE, DROP VIEW" + scope,
+		"GRANT ALTER ADD COLUMN, ALTER MODIFY COLUMN, ALTER VIEW MODIFY QUERY" + scope,
+		"GRANT ALTER ADD INDEX, ALTER DROP INDEX, ALTER MATERIALIZE INDEX" + scope,
+		"GRANT SYSTEM SYNC REPLICA, SYSTEM MERGES, ALTER SETTINGS" + scope,
+		"GRANT SELECT(database, table, name, partition, partition_id, active, rows) ON system.parts" + system,
+		"GRANT SELECT(database, table, is_done) ON system.mutations" + system,
+		"GRANT SELECT(database, name, engine) ON system.tables" + system,
+		"GRANT SELECT ON system.processes" + system,
+		"GRANT SELECT ON system.query_log*" + system,
+	}
+}
+
+func ClickHouseExists(name string) (Presence, error) {
+	var p Presence
+	db, err := clickhouseQuery("SELECT count() FROM system.databases WHERE name = " + clickhouseLiteral(name))
+	if err != nil {
+		return p, err
+	}
+	p.Database = db == "1"
+	user, err := clickhouseQuery("SELECT count() FROM system.users WHERE name = " + clickhouseLiteral(name))
+	if err != nil {
+		return p, err
+	}
+	if user == "1" {
+		p.Users = append(p.Users, name)
+	}
+	return p, nil
+}
+
+func ClickHouseDrop(name string) ([]string, error) {
+	var did []string
+	p, err := ClickHouseExists(name)
+	if err != nil {
+		return did, err
+	}
+	if p.Database {
+		if err := clickhouseRun("DROP DATABASE " + ident(name)); err != nil {
+			return did, err
+		}
+		did = append(did, "dropped database "+name+" on ClickHouse")
+	}
+	for _, user := range p.Users {
+		if err := clickhouseRun("DROP USER " + ident(user)); err != nil {
+			return did, err
+		}
+		did = append(did, "dropped user "+user+" on ClickHouse")
+	}
+	return did, nil
+}
+
+func clickhouseClient(sql string) (string, error) {
+	cmd := exec.Command("docker", "exec", "-i", clickhouse, "clickhouse-client")
+	cmd.Stdin = strings.NewReader(sql)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("clickhouse-client: %s", strings.TrimSpace(string(out)))
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+func clickhouseQuery(sql string) (string, error) { return clickhouseClient(sql) }
+
+func clickhouseRun(sql string) error {
+	_, err := clickhouseClient(sql)
+	return err
+}
+
+func clickhouseLogin(user, password string) (bool, error) {
+	cmd := exec.Command("docker", "exec", "-i", "-e", "CLICKHOUSE_USER="+user, clickhouse, "sh", "-c", `IFS= read -r CLICKHOUSE_PASSWORD; export CLICKHOUSE_PASSWORD; exec clickhouse-client --query "SELECT 1"`)
+	cmd.Stdin = strings.NewReader(password + "\n")
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		return true, nil
+	}
+	if strings.Contains(string(out), "AUTHENTICATION_FAILED") {
+		return false, nil
+	}
+	return false, fmt.Errorf("clickhouse-client as %s: %s", user, strings.TrimSpace(string(out)))
+}
+
+func clickhouseLiteral(value string) string {
+	return "'" + strings.NewReplacer(`\`, `\\`, `'`, `\'`).Replace(value) + "'"
+}

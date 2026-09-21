@@ -12,6 +12,15 @@ An asked variable is collected by the interview when its container is switched o
 | `USERLAND_ON` | written by the CLI | always |  | The selection: every container that is switched on, comma-separated. |
 | `USERLAND_OFF` | written by the CLI | always |  | Every container that was asked about and is off, so a re-run does not ask again. |
 
+## clickhouse
+
+### clickhouse
+
+| Variable | Kind | When | Keep | Meaning |
+|---|---|---|---|---|
+| `CLICKHOUSE_PASSWORD` | generated | always |  | Password of the ClickHouse admin user, default |
+| `CLICKHOUSE_MEM_LIMIT` | optional |  |  | Memory limit in compose's units, such as `2g`. Unbounded unless set. |
+
 ## metabase
 
 ### metabase

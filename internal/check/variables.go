@@ -26,11 +26,8 @@ func Variables(m *manifest.Manifest, bodies []body) string {
 	})
 	asked := map[string]bool{}
 	for _, c := range m.All() {
-		for _, a := range c.Asks {
+		for _, a := range c.AllAsks() {
 			asked[a.Var] = true
-		}
-		if c.Postgres != nil {
-			asked[c.Postgres.Password] = true
 		}
 	}
 	defaults := map[string]map[string]string{}
@@ -70,6 +67,9 @@ func Variables(m *manifest.Manifest, bodies []body) string {
 		}
 		if c.Postgres != nil {
 			rows = append(rows, row{c.Postgres.Password, "generated", "always", "", fmt.Sprintf("Password of the `%s` user on Postgres, which owns the `%s` database. Provisioning converges it to whatever this holds.", c.Postgres.Database, c.Postgres.Database)})
+		}
+		if c.ClickHouse != nil {
+			rows = append(rows, row{c.ClickHouse.Password, "generated", "always", "", fmt.Sprintf("Password of the `%s` user on ClickHouse, which reaches the `%s` database and nothing else. Provisioning converges it to whatever this holds.", c.ClickHouse.Database, c.ClickHouse.Database)})
 		}
 		var optional []row
 		if c.HTTP != nil {
