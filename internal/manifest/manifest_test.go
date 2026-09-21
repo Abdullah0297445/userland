@@ -172,3 +172,63 @@ func TestDatabaseAndSharesDatabase(t *testing.T) {
 		t.Fatal("name rules")
 	}
 }
+
+func TestExternalKindsLoadAndSupplyTheirVariables(t *testing.T) {
+	m, err := load(t, `{"products": {
+		"fort": {"containers": {"fort": {"external": {"FORT_S3": {"kind": "bucket", "versioned": true}, "FORT_KEY": {"kind": "secret-store"}}}}},
+		"langfuse": {"containers": {
+			"langfuse-web": {"external": {"LANGFUSE_S3": {"kind": "bucket", "delete": true}}},
+			"langfuse-worker": {"requires": ["langfuse-web"], "external": {"LANGFUSE_S3": {"kind": "bucket", "delete": true}}}
+		}}
+	}}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fort := m.Container("fort")
+	if !reflect.DeepEqual(fort.Externals(), []string{"FORT_KEY", "FORT_S3"}) {
+		t.Fatalf("externals %v", fort.Externals())
+	}
+	var vars []string
+	for _, a := range fort.AllAsks() {
+		vars = append(vars, a.Var+":"+a.Type)
+	}
+	want := []string{
+		"FORT_KEY_PROVIDER:choice", "FORT_KEY_NAME:parameter-name", "FORT_KEY_REGION:text", "FORT_KEY_ACCESS_KEY_ID:secret", "FORT_KEY_SECRET_ACCESS_KEY:secret",
+		"FORT_S3_BUCKET:bucket-name", "FORT_S3_REGION:text", "FORT_S3_ENDPOINT:url", "FORT_S3_ACCESS_KEY_ID:secret", "FORT_S3_SECRET_ACCESS_KEY:secret",
+	}
+	if !reflect.DeepEqual(vars, want) {
+		t.Fatalf("asks %v", vars)
+	}
+	if c, a, ok := m.AskFor("FORT_S3_BUCKET"); !ok || c.Name != "fort" || a.Type != BucketName {
+		t.Fatal("a kind's variable is found like an ask")
+	}
+	if c, x, ok := m.External("LANGFUSE_S3"); !ok || c.Name != "langfuse-web" || !x.Delete || x.Describe() != "bucket, delete" {
+		t.Fatalf("External lookup: %v %v %v", c, x, ok)
+	}
+	if (External{Kind: Bucket, Versioned: true}).Describe() != "bucket, versioned" || (External{Kind: SecretStore}).Describe() != "secret-store" {
+		t.Fatal("Describe")
+	}
+	if Dependency("FORT_S3") != "fort-s3" || Dependency("X") != "x" {
+		t.Fatal("Dependency")
+	}
+}
+
+func TestLoadRefusesBadExternals(t *testing.T) {
+	cases := map[string]string{
+		"unknown kind":             `{"products": {"p": {"containers": {"c": {"external": {"X": {"kind": "vault"}}}}}}}`,
+		"no kind":                  `{"products": {"p": {"containers": {"c": {"external": {"X": {}}}}}}}`,
+		"secret store versioned":   `{"products": {"p": {"containers": {"c": {"external": {"X": {"kind": "secret-store", "versioned": true}}}}}}}`,
+		"secret store delete":      `{"products": {"p": {"containers": {"c": {"external": {"X": {"kind": "secret-store", "delete": true}}}}}}}`,
+		"lowercase prefix":         `{"products": {"p": {"containers": {"c": {"external": {"x_s3": {"kind": "bucket"}}}}}}}`,
+		"shared but different":     `{"products": {"p": {"containers": {"a": {"external": {"X": {"kind": "bucket"}}}, "b": {"external": {"X": {"kind": "bucket", "delete": true}}}}}}}`,
+		"ask collides with a kind": `{"products": {"p": {"containers": {"c": {"asks": [{"var": "X_BUCKET", "type": "text"}], "external": {"X": {"kind": "bucket"}}}}}}}`,
+	}
+	for name, body := range cases {
+		if _, err := load(t, body); err == nil || !strings.HasPrefix(err.Error(), "manifest.json: ") {
+			t.Errorf("%s: want a manifest.json refusal, got %v", name, err)
+		}
+	}
+	if _, err := load(t, `{"products": {"p": {"containers": {"a": {"external": {"X": {"kind": "bucket", "delete": true}}}, "b": {"external": {"X": {"kind": "bucket", "delete": true}}}}}}}`); err != nil {
+		t.Fatalf("two containers may share one external when they agree: %v", err)
+	}
+}

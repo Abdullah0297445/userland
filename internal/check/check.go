@@ -163,7 +163,7 @@ func checkReferences(r *Report, m *manifest.Manifest, bodies []body) {
 		}
 	}
 	if clean {
-		r.pass("every variable a template reads without a default is asked or is a database password")
+		r.pass("every variable a template reads without a default is asked, is a database password, or is one an external kind supplies")
 	}
 }
 

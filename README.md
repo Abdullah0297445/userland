@@ -150,6 +150,9 @@ apply brings them back.
    or when another variable holds a given value. Each answer is checked against its
    type as you type it, and every one must fit on one line, without `$`, `#`, quotes or
    a backtick and without a space at either end, because compose reads `.env` unquoted.
+   A container's external dependencies come after its own variables: the name and the
+   region, then the offer to make it on AWS, then the checklist and the rest, under *Object
+   store* and *Secret store* below.
 5. **Write `.env`**, then apply.
 
 | Type | The interview asks for |
@@ -200,6 +203,108 @@ only when `SHOW GRANTS` would change. ClickHouse keeps no hash a program can rec
 password is checked by logging in as the user, which fails for real there, and set only when
 the login fails. The client reads its password from its environment, so none is on a command
 line.
+
+## Object store
+
+userland never runs an object store. A container that needs a bucket says so in the manifest,
+`"external": {"FORT_S3": {"kind": "bucket", "versioned": true}}`, and the kind supplies five
+variables under that prefix: `_BUCKET`, `_REGION`, `_ENDPOINT`, `_ACCESS_KEY_ID` and
+`_SECRET_ACCESS_KEY`. The interview asks the name (enter to generate
+`userland-<dependency>-<8 hex>`, or type one you made) and the region, then offers to make the
+rest on AWS. Decline, the default, and it prints a checklist with your names in it and asks for
+the endpoint and the access key. A dependency whose five variables are in `.env` is never asked
+again, and two containers naming one prefix share the bucket. The region is text with no
+default, because `auto` is a real answer on Cloudflare R2.
+
+**The offer.** *Create it on AWS now?* Yes asks for an admin access key id, its secret and, if
+it has one, a session token, once per run. They go into the environment of
+`docker run --rm amazon/aws-cli` and are written nowhere, and the CLI says so when it finishes.
+The steps: `sts get-caller-identity`; the bucket, `head-bucket` then `create-bucket` in the
+region; versioning on when the kind says `versioned`; an IAM user named as the bucket; an inline
+policy named `userland` on that user, written on every run; an access key. Then the five
+variables land in `.env`, with the endpoint `https://s3.<region>.amazonaws.com`. What already
+exists is **adopted**, never overwritten: a bucket you own is reused and its versioning
+re-applied, a user that exists gets the policy re-applied and you are asked to paste one of its
+keys or to mint one, and a bucket name another account owns is refused and asked again. A user
+already holding two access keys stops the run, since AWS allows no third. The offer reads
+`AWS_ENDPOINT_URL` from your environment, as the aws CLI does, and nothing else about it is
+configurable. Outside the offer nothing in the interview reaches the network.
+
+**The keys, and what each may do.** Every key reaches its one bucket and nothing else. It lists
+the bucket, gets and puts objects, and aborts a multipart upload, since a killed upload leaves
+parts behind and abort can never remove a finished object. A `versioned` bucket's key may also
+read whether versioning is on. A `delete` bucket's key may delete objects; langfuse's is the one,
+because its Data Retention feature deletes. Every other key can never delete, so a compromised
+host cannot erase its own archives. This is the document the offer writes, for a bucket with
+neither property; `versioned` adds `s3:GetBucketVersioning` to the first statement and `delete`
+adds `s3:DeleteObject` to the second:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {"Effect": "Allow", "Action": ["s3:ListBucket"], "Resource": "arn:aws:s3:::BUCKET"},
+    {"Effect": "Allow", "Action": ["s3:GetObject", "s3:PutObject", "s3:AbortMultipartUpload"], "Resource": "arn:aws:s3:::BUCKET/*"}
+  ]
+}
+```
+
+**Retention is yours.** Nothing in userland deletes from a bucket whose key cannot, and the CLI
+never writes a lifecycle rule: a rule on a whole bucket would expire the base a later ClickHouse
+backup depends on, so any rule is prefix-scoped and set by you at your provider. The first time
+a bucket's container is switched on, the CLI says so; without a rule the bucket grows.
+
+**By hand, at any provider.** The checklist the interview prints is the short form of this.
+
+- **AWS.** Bucket, then user, then the inline policy above, then an access key. New buckets
+  block public access, disable ACLs and encrypt at rest by default, so nothing else is set.
+  Retention is a lifecycle rule: an expiration on the dumps, a noncurrent-version expiration
+  on fort's bucket, and, once ClickHouse's archive shares the dumps' bucket, scoped to the
+  dumps' prefix, because an expired base breaks every increment after it. AWS also
+  recommends a rule that aborts incomplete multipart uploads after a few days; that one is
+  yours too.
+- **Backblaze B2.** An application key restricted to the one bucket with `listFiles`,
+  `readFiles` and `writeFiles`, adding `deleteFiles` only for a `delete` bucket. `writeFiles`
+  without `deleteFiles` is the no-delete key, and an upload to an existing name makes a new
+  version, so fort's fixed keys work. Every B2 bucket keeps versions, so fort's check passes.
+  Retention is B2's lifecycle rules; through the S3 API an expiration rule is paired with a
+  delete-marker rule. Endpoint `https://s3.<region>.backblazeb2.com`, region as in the
+  endpoint. **This is the provider to pick without an AWS account.**
+- **Cloudflare R2.** A token of *Object Read & Write* scoped to the bucket. There is no level
+  that writes without deleting, so on R2 the dumps' key and fort's can delete, and a
+  compromised host could erase its own archives there. R2 has no versioning, so fort needs
+  `FORT_ALLOW_UNVERSIONED=true` and history is one deep. Lifecycle rules exist and are
+  prefix-scoped. Endpoint `https://<account id>.r2.cloudflarestorage.com`, region `auto`.
+  Virtual-hosted requests are accepted, so no path-style setting is needed.
+
+## Secret store
+
+fort's master key lives in a secret store you own, never on the host. The kind is
+`"external": {"FORT_KEY": {"kind": "secret-store"}}`; its five variables are `_PROVIDER`
+(`ssm`, AWS Parameter Store, the one there is), `_NAME`, `_REGION`, `_ACCESS_KEY_ID` and
+`_SECRET_ACCESS_KEY`, and the interview asks them the same way: the name (enter to generate
+`/userland/<dependency>-<8 hex>`, or type one you made), the region, then the offer or the
+checklist.
+
+The offer writes a `SecureString` parameter with a 32-byte random value it never shows and
+never overwrites: a parameter that exists is adopted, because a replaced master key would make
+every archive fort ever wrote unreadable. Then a user named from the parameter with `/` made `-`,
+this policy, and an access key. `NAME` is the parameter's name without its leading slash, and
+`KEY-ID` is the account's `aws/ssm` key, which `kms describe-key --key-id alias/aws/ssm`
+returns; a `SecureString` written without a key of your own is encrypted under it.
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {"Effect": "Allow", "Action": ["ssm:GetParameter"], "Resource": "arn:aws:ssm:REGION:ACCOUNT:parameter/NAME"},
+    {"Effect": "Allow", "Action": ["kms:Decrypt"], "Resource": "arn:aws:kms:REGION:ACCOUNT:key/KEY-ID"}
+  ]
+}
+```
+
+By hand: the parameter, the user, the policy, the access key, in that order. The key may only
+read that one parameter, and nothing it holds writes.
 
 ## ClickHouse
 
@@ -345,8 +450,8 @@ consumer.
 - every container has a template and every template is a container;
 - no template writes a key the generator owns, and every template's `environment` opens
   with the merge line that carries `TZ=UTC`;
-- every variable a template reads without a default is asked by the manifest or is a
-  database password;
+- every variable a template reads without a default is asked by the manifest, is a
+  database password, or is one an external kind supplies;
 - `VARIABLES.md` matches the manifest and templates;
 - compose accepts the rendered file;
 - `TZ=UTC` reaches every service;
@@ -356,8 +461,9 @@ consumer.
 It runs in CI on every pull request and on every push to `main`
 ([`.github/workflows/check.yml`](.github/workflows/check.yml)), followed by `go test`.
 The manifest itself is refused on load for a container in two products, a volume declared
-by two containers, two containers on one loopback port, or an ask whose type or `when` the
-interview does not know.
+by two containers, two containers on one loopback port, an ask whose type or `when` the
+interview does not know, or an external dependency of a kind it does not know or with a
+property its kind has no use for.
 
 ## Layout
 
@@ -396,6 +502,7 @@ is missing as you fill them in.
 | `ports` | Ports published on every interface. traefik alone. |
 | `volumes` | Named volumes this container mounts. The top-level `volumes` block, "left behind" and `reclaim` all read this. |
 | `asks` | `var`, `type`, `prompt`, optional `when` (`public`, `local` or `VAR=value`) and `keep`. Types: `text hostname email url port secret generated choice paths`, described under *The interview*. |
+| `external` | `{"PREFIX": {"kind": "bucket"}}`, with `"delete": true` or `"versioned": true` where the container needs it, or `{"kind": "secret-store"}`. The kind supplies five variables under the prefix, and the interview asks them with the offer and the checklist, under *Object store* and *Secret store*. Two containers naming one prefix share it and must describe it alike. |
 | `renamed` | `{"OLD_NAME": "NEW_NAME"}`. The next run moves the `.env` value under its new name and drops the old line. |
 | `removed` | Variables this container no longer reads. The next run drops their lines. |
 

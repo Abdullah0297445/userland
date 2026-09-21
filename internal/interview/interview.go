@@ -88,7 +88,7 @@ func Run(m *manifest.Manifest, e *env.File, out io.Writer) (*Result, error) {
 	r.On, r.Off = on, off
 	e.Set(On, strings.Join(on, ","))
 	e.Set(Off, strings.Join(off, ","))
-	asked, err := Variables(m, e)
+	asked, err := Variables(m, e, out)
 	r.Asked = asked
 	if err != nil {
 		return nil, err
@@ -111,7 +111,7 @@ func Gate(m *manifest.Manifest, product string, containers []*manifest.Container
 	return selectMany(product, description, options)
 }
 
-func Variables(m *manifest.Manifest, e *env.File) ([]string, error) {
+func Variables(m *manifest.Manifest, e *env.File, out io.Writer) ([]string, error) {
 	on := e.List(On)
 	var asked []string
 	for _, product := range m.ProductOrder() {
@@ -119,7 +119,7 @@ func Variables(m *manifest.Manifest, e *env.File) ([]string, error) {
 			if !contains(on, c.Name) {
 				continue
 			}
-			for _, a := range c.AllAsks() {
+			for _, a := range append(append([]manifest.Ask{}, c.Asks...), c.PasswordAsks()...) {
 				if !a.Applies(e.Get(Visibility), e.Get) || e.Get(a.Var) != "" {
 					continue
 				}
@@ -130,7 +130,16 @@ func Variables(m *manifest.Manifest, e *env.File) ([]string, error) {
 				e.Set(a.Var, value)
 				asked = append(asked, a.Var)
 			}
+			did, err := externals(c, e, out)
+			asked = append(asked, did...)
+			if err != nil {
+				return asked, err
+			}
 		}
+	}
+	if admin != nil {
+		fmt.Fprintln(out, "the admin credentials were used for this run and not kept")
+		admin = nil
 	}
 	return asked, nil
 }

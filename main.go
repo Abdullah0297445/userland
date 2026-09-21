@@ -138,7 +138,7 @@ func interviewThenApply(root string) error {
 	if err := e.Write(); err != nil {
 		return err
 	}
-	return apply(m, e, root)
+	return apply(m, e, root, result.Asked)
 }
 
 func migrate(m *manifest.Manifest, e *env.File) error {

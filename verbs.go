@@ -44,7 +44,7 @@ func contractCommand(root string) *cobra.Command {
 
 func applyCommand(root string) *cobra.Command {
 	return verb(root, "apply", "Render, bring up, provision, print.", operate, cobra.NoArgs, func(m *manifest.Manifest, e *env.File, root string, _ []string) error {
-		return apply(m, e, root)
+		return apply(m, e, root, nil)
 	})
 }
 
@@ -93,7 +93,7 @@ func on(m *manifest.Manifest, e *env.File, root string, names []string) error {
 	}
 	e.Set(interview.On, strings.Join(on, ","))
 	e.Set(interview.Off, strings.Join(off, ","))
-	asked, err := interview.Variables(m, e)
+	asked, err := interview.Variables(m, e, os.Stdout)
 	if err != nil {
 		return err
 	}
@@ -111,10 +111,10 @@ func on(m *manifest.Manifest, e *env.File, root string, names []string) error {
 	if err := e.Write(); err != nil {
 		return err
 	}
-	if err := apply(m, e, root); err != nil {
+	if err := apply(m, e, root, asked); err != nil {
 		return err
 	}
-	return offer(m, on, turnedOff)
+	return offerReclaim(m, on, turnedOff)
 }
 
 func off(m *manifest.Manifest, e *env.File, root string, names []string) error {
@@ -136,10 +136,10 @@ func off(m *manifest.Manifest, e *env.File, root string, names []string) error {
 	if err := e.Write(); err != nil {
 		return err
 	}
-	if err := apply(m, e, root); err != nil {
+	if err := apply(m, e, root, nil); err != nil {
 		return err
 	}
-	return offer(m, remaining, names)
+	return offerReclaim(m, remaining, names)
 }
 
 func set(m *manifest.Manifest, e *env.File, root string, variable string) error {
@@ -170,15 +170,16 @@ func set(m *manifest.Manifest, e *env.File, root string, variable string) error 
 		}
 		e.Set(variable, value)
 	}
-	asked, err := interview.Variables(m, e)
+	asked, err := interview.Variables(m, e, os.Stdout)
 	if err != nil {
 		return err
 	}
-	say("asked and written: " + strings.Join(append([]string{variable}, asked...), ", "))
+	asked = append([]string{variable}, asked...)
+	say("asked and written: " + strings.Join(asked, ", "))
 	if err := e.Write(); err != nil {
 		return err
 	}
-	return apply(m, e, root)
+	return apply(m, e, root, asked)
 }
 
 func refuseBlocking(m *manifest.Manifest, remaining, turnedOff []string) error {
@@ -277,7 +278,7 @@ func (l leftover) storeOff(on []string) string {
 	return ""
 }
 
-func offer(m *manifest.Manifest, on, names []string) error {
+func offerReclaim(m *manifest.Manifest, on, names []string) error {
 	total := leftover{notes: map[string]string{}}
 	for _, name := range names {
 		l := leftBehind(m, on, m.Container(name))
@@ -435,7 +436,7 @@ func renderFile(m *manifest.Manifest, e *env.File, root string) error {
 	return nil
 }
 
-func apply(m *manifest.Manifest, e *env.File, root string) error {
+func apply(m *manifest.Manifest, e *env.File, root string, asked []string) error {
 	if err := renderFile(m, e, root); err != nil {
 		return err
 	}
@@ -454,7 +455,7 @@ func apply(m *manifest.Manifest, e *env.File, root string) error {
 	if err := compose(root, "ps", "--format", "table {{.Name}}\t{{.Status}}\t{{.Ports}}"); err != nil {
 		return err
 	}
-	closing(m, e, on)
+	closing(m, e, on, asked)
 	return nil
 }
 
@@ -485,11 +486,19 @@ func provisionAll(m *manifest.Manifest, e *env.File) error {
 	return nil
 }
 
-func closing(m *manifest.Manifest, e *env.File, on []string) {
+func closing(m *manifest.Manifest, e *env.File, on []string, asked []string) {
 	var keep []string
+	said := map[string]bool{}
 	for _, c := range m.All() {
 		if !contains(on, c.Name) {
 			continue
+		}
+		for _, prefix := range c.Externals() {
+			x := c.External[prefix]
+			if x.Kind == manifest.Bucket && contains(asked, prefix+"_"+manifest.Name) && !said[prefix] {
+				say(interview.Retention(prefix, *x))
+				said[prefix] = true
+			}
 		}
 		if c.HTTP != nil {
 			switch {

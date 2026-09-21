@@ -19,18 +19,19 @@ type Product struct {
 }
 
 type Container struct {
-	Name       string            `json:"-"`
-	Product    string            `json:"-"`
-	Requires   []string          `json:"requires"`
-	Optional   []string          `json:"optional"`
-	HTTP       *HTTP             `json:"http"`
-	Postgres   *Database         `json:"postgres"`
-	ClickHouse *Database         `json:"clickhouse"`
-	Ports      []int             `json:"ports"`
-	Volumes    []string          `json:"volumes"`
-	Asks       []Ask             `json:"asks"`
-	Renamed    map[string]string `json:"renamed"`
-	Removed    []string          `json:"removed"`
+	Name       string               `json:"-"`
+	Product    string               `json:"-"`
+	Requires   []string             `json:"requires"`
+	Optional   []string             `json:"optional"`
+	HTTP       *HTTP                `json:"http"`
+	Postgres   *Database            `json:"postgres"`
+	ClickHouse *Database            `json:"clickhouse"`
+	Ports      []int                `json:"ports"`
+	Volumes    []string             `json:"volumes"`
+	Asks       []Ask                `json:"asks"`
+	External   map[string]*External `json:"external"`
+	Renamed    map[string]string    `json:"renamed"`
+	Removed    []string             `json:"removed"`
 }
 
 type HTTP struct {
@@ -167,12 +168,36 @@ func Parse(raw []byte) (*Manifest, error) {
 			if err := c.checkAsks(); err != nil {
 				return nil, err
 			}
+			for _, prefix := range c.Externals() {
+				if err := c.External[prefix].check(name, prefix); err != nil {
+					return nil, err
+				}
+			}
 		}
 	}
 	volumes := map[string]string{}
 	hostPorts := map[int]string{}
 	databases := map[string]*Container{}
+	externals := map[string]*Container{}
+	explicit := map[string]string{}
 	for _, c := range m.All() {
+		for _, a := range c.Asks {
+			explicit[a.Var] = c.Name
+		}
+	}
+	for _, c := range m.All() {
+		for _, prefix := range c.Externals() {
+			x := c.External[prefix]
+			if other, shared := externals[prefix]; shared && *other.External[prefix] != *x {
+				return nil, fmt.Errorf("manifest.json: %s and %s share the external dependency %s but describe it differently", other.Name, c.Name, prefix)
+			}
+			externals[prefix] = c
+			for _, v := range x.Variables(prefix) {
+				if asker, taken := explicit[v]; taken {
+					return nil, fmt.Errorf("manifest.json: %s asks %s, which %s's %s supplies", asker, v, c.Name, prefix)
+				}
+			}
+		}
 		if c.Postgres != nil {
 			if other, shared := databases[c.Postgres.Database]; shared && !maps.Equal(other.Postgres.Settings, c.Postgres.Settings) {
 				return nil, fmt.Errorf("manifest.json: %s and %s share the database %s but set different settings on its user", other.Name, c.Name, c.Postgres.Database)
@@ -243,7 +268,7 @@ func (c *Container) PasswordAsks() []Ask {
 }
 
 func (c *Container) AllAsks() []Ask {
-	return append(append([]Ask{}, c.Asks...), c.PasswordAsks()...)
+	return append(append(append([]Ask{}, c.Asks...), c.PasswordAsks()...), c.ExternalAsks()...)
 }
 
 func (m *Manifest) Container(name string) *Container {
