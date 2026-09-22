@@ -239,14 +239,24 @@ func (l leftover) empty() bool {
 
 func (l leftover) merge(o leftover) leftover {
 	out := leftover{notes: map[string]string{}}
-	out.volumes = append(append(out.volumes, l.volumes...), o.volumes...)
-	out.databases = append(append(out.databases, l.databases...), o.databases...)
-	out.clickhouse = append(append(out.clickhouse, l.clickhouse...), o.clickhouse...)
+	out.volumes = once(l.volumes, o.volumes)
+	out.databases = once(l.databases, o.databases)
+	out.clickhouse = once(l.clickhouse, o.clickhouse)
 	for k, v := range l.notes {
 		out.notes[k] = v
 	}
 	for k, v := range o.notes {
 		out.notes[k] = v
+	}
+	return out
+}
+
+func once(list, add []string) []string {
+	out := append([]string{}, list...)
+	for _, x := range add {
+		if !contains(out, x) {
+			out = append(out, x)
+		}
 	}
 	return out
 }
