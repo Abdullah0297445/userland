@@ -6,4 +6,5 @@ const (
 	TransactionDoor = "pgbouncer-transaction"
 	SessionDoor     = "pgbouncer-session"
 	ClickHouse      = "clickhouse"
+	Backup          = "pg-backup"
 )
