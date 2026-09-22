@@ -84,13 +84,6 @@ func TestKeptReadsTheColonSeparatedList(t *testing.T) {
 	if e.Get(Files) != "/srv/app/.env:/home/user/userland/.env" {
 		t.Fatalf("written as %q", e.Get(Files))
 	}
-	lines, err := Environment(e)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !contains(lines, Files+"=/srv/app/.env:/home/user/userland/.env") {
-		t.Fatalf("the list does not reach the container: %v", lines)
-	}
 }
 
 func TestUntarPutsEachFileBackWithItsModeAndTime(t *testing.T) {

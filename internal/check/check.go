@@ -265,9 +265,14 @@ func checkRendered(r *Report, root string, m *manifest.Manifest, visibility stri
 				clean = false
 			}
 		}
+		for _, dep := range append(append([]string{}, c.Requires...), c.Optional...) {
+			for _, v := range m.Container(dep).Volumes {
+				declared[v] = true
+			}
+		}
 		for v := range mounted {
 			if !declared[v] {
-				r.fail("%s: %s mounts volume %s, which manifest.json does not declare on it", visibility, c.Name, v)
+				r.fail("%s: %s mounts volume %s, which manifest.json declares neither on it nor on a container it depends on", visibility, c.Name, v)
 				clean = false
 			}
 			if _, top := config.Volumes[v]; !top {
@@ -277,7 +282,7 @@ func checkRendered(r *Report, root string, m *manifest.Manifest, visibility stri
 		}
 	}
 	if clean {
-		r.pass("%s: every named volume is declared on the container that mounts it, and vice versa", visibility)
+		r.pass("%s: every named volume is declared on the container that mounts it or on one it depends on, and every declared volume is mounted", visibility)
 	}
 	return nil
 }

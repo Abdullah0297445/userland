@@ -3,6 +3,7 @@ package interview
 import (
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/Abdullah0297445/userland/internal/env"
 	"github.com/Abdullah0297445/userland/internal/manifest"
@@ -25,6 +26,23 @@ func Migrate(m *manifest.Manifest, e *env.File) []string {
 			if e.Remove(name) {
 				did = append(did, fmt.Sprintf("dropped %s, which %s no longer reads", name, c.Name))
 			}
+		}
+	}
+	for _, key := range []string{On, Off} {
+		var known, gone []string
+		for _, name := range e.List(key) {
+			if m.Container(name) == nil {
+				gone = append(gone, name)
+			} else {
+				known = append(known, name)
+			}
+		}
+		if len(gone) == 0 {
+			continue
+		}
+		e.Set(key, strings.Join(known, ","))
+		for _, name := range gone {
+			did = append(did, fmt.Sprintf("dropped %s from %s, since the manifest no longer has a container of that name", name, key))
 		}
 	}
 	return did

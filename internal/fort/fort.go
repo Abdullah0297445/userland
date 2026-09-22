@@ -28,6 +28,7 @@ const (
 	Schedule     = "FORT_SCHEDULE"
 	Bucket       = "FORT_S3"
 	Store        = "FORT_KEY"
+	FilesTag     = "files"
 	keyCommand   = "/usr/local/bin/fort-key"
 	noRepository = 10
 	wrongKey     = 12
@@ -86,9 +87,6 @@ func Environment(e *env.File) ([]string, error) {
 	for _, name := range StoreVariables() {
 		lines = append(lines, name+"="+e.Get(name))
 	}
-	if spec := e.Get(Files); spec != "" {
-		lines = append(lines, Files+"="+spec)
-	}
 	if url := os.Getenv("AWS_ENDPOINT_URL"); url != "" {
 		lines = append(lines, "AWS_ENDPOINT_URL="+url)
 	}
@@ -129,12 +127,14 @@ func Keep(e *env.File, paths []string) {
 	e.Set(Files, strings.Join(paths, Separator))
 }
 
-func Backup(e *env.File) (string, error) {
-	return Output(e, render.Mounts(e.Get(Files)), "backup")
+func Backup() error {
+	cmd := exec.Command("docker", "exec", Container, "/fort-entrypoint.sh", "backup")
+	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+	return cmd.Run()
 }
 
 func Listing(e *env.File) ([]Node, error) {
-	out, err := Output(e, nil, "ls", "--json", "--no-lock", "--recursive", "latest", render.FilesRoot)
+	out, err := Output(e, nil, "ls", "--json", "--no-lock", "--recursive", "--tag", FilesTag, "latest", render.FilesRoot)
 	if err != nil {
 		return nil, err
 	}
@@ -167,7 +167,7 @@ func Extract(e *env.File, target string) ([]string, error) {
 	}
 	defer remove()
 	cmd := exec.Command("docker", "run", "--rm", "--env-file", file, Image,
-		"dump", "--no-lock", "latest:"+render.FilesRoot, "/", "--archive", "tar")
+		"dump", "--no-lock", "--tag", FilesTag, "latest:"+render.FilesRoot, "/", "--archive", "tar")
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, err

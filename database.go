@@ -2,8 +2,6 @@ package main
 
 import (
 	"fmt"
-	"os"
-	"os/exec"
 
 	"github.com/spf13/cobra"
 
@@ -17,7 +15,7 @@ import (
 func postgresCommand(root string) *cobra.Command {
 	postgres := &cobra.Command{
 		Use:     "postgres",
-		Short:   "Postgres: a consumer's database and user, and the archives in the bucket.",
+		Short:   "Postgres: a consumer's database and user.",
 		GroupID: products,
 	}
 	database := &cobra.Command{
@@ -52,37 +50,8 @@ func postgresCommand(root string) *cobra.Command {
 		},
 	}
 	database.AddCommand(add, remove)
-	backup := &cobra.Command{
-		Use:   "backup",
-		Short: "The archives in the bucket: one for every database, and one for the globals.",
-	}
-	now := &cobra.Command{
-		Use:   "now",
-		Short: "Back up every database and the globals now, out of schedule.",
-		Args:  cobra.NoArgs,
-		RunE: func(_ *cobra.Command, _ []string) error {
-			_, e, err := load(root)
-			if err != nil {
-				return err
-			}
-			return backupNow(e)
-		},
-	}
-	backup.AddCommand(now)
-	postgres.AddCommand(database, backup)
+	postgres.AddCommand(database)
 	return postgres
-}
-
-func backupNow(e *env.File) error {
-	if !contains(e.List(interview.On), manifest.Backup) {
-		return fmt.Errorf("%s is off; ./bootstrap on %s switches it on", manifest.Backup, manifest.Backup)
-	}
-	cmd := exec.Command("docker", "exec", manifest.Backup, "sh", "/backup.sh")
-	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("the backup failed: %w; the lines above name what it could not dump or upload, and every archive already in the bucket is untouched", err)
-	}
-	return nil
 }
 
 func addDatabase(m *manifest.Manifest, e *env.File, name string, session, api bool) error {

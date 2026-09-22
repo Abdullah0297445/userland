@@ -74,12 +74,17 @@ func TestMigrate(t *testing.T) {
 	e.Set("KEEP", "1")
 	e.Set("OLD_URL", "https://example.test")
 	e.Set("GONE", "x")
+	e.Set(On, "c,retired")
+	e.Set(Off, "retired")
 	did := Migrate(m, e)
-	if len(did) != 2 {
+	if len(did) != 4 {
 		t.Fatalf("did %v", did)
 	}
 	if e.Has("OLD_URL") || e.Has("GONE") || e.Get("NEW_ENDPOINT") != "https://example.test" || e.Get("KEEP") != "1" {
 		t.Fatalf("env after migrate: NEW_ENDPOINT=%q KEEP=%q", e.Get("NEW_ENDPOINT"), e.Get("KEEP"))
+	}
+	if e.Get(On) != "c" || e.Get(Off) != "" {
+		t.Fatalf("selection after migrate: %s=%q %s=%q", On, e.Get(On), Off, e.Get(Off))
 	}
 	if again := Migrate(m, e); len(again) != 0 {
 		t.Fatalf("second migrate did %v", again)
@@ -96,16 +101,15 @@ func TestLabelNamesWhoNeedsIt(t *testing.T) {
 		got[c.Name] = label(m, c)
 	}
 	want := map[string]string{
-		"clickhouse":            "clickhouse",
+		"clickhouse":            "clickhouse: optional for fort",
 		"fort":                  "fort",
 		"metabase":              "metabase",
 		"n8n":                   "n8n: required by n8n-runners",
 		"n8n-runners":           "n8n-runners: optional for n8n",
-		"pg-backup":             "pg-backup",
 		"pgadmin":               "pgadmin",
 		"pgbouncer-session":     "pgbouncer-session",
 		"pgbouncer-transaction": "pgbouncer-transaction: required by metabase, n8n",
-		"postgres-18":           "postgres-18: required by pg-backup, pgadmin, pgbouncer-session, pgbouncer-transaction",
+		"postgres-18":           "postgres-18: required by pgadmin, pgbouncer-session, pgbouncer-transaction; optional for fort",
 		"traefik":               "traefik: optional for metabase, n8n, pgadmin",
 	}
 	if !reflect.DeepEqual(got, want) {

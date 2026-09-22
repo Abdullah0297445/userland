@@ -160,8 +160,9 @@ reaches no other database. Postgres calls a user that can log in a role; here it
 _Avoid_: tenant, role (for this), account, owner (as its name)
 
 **Superuser**:
-The single Postgres superuser that provisions databases and runs the backup. No other user
-holds it. On ClickHouse the same seat is the user `default`, which provisioning alone uses.
+The single Postgres superuser that provisions databases and that fort archives them as. No
+other user holds it. On ClickHouse the same seat is the user `default`, which provisioning and
+fort use.
 _Avoid_: engine superuser, admin, root, postgres user
 
 **Door**:
@@ -190,8 +191,9 @@ one file alone.
 _Avoid_: dump, backup file, snapshot, copy
 
 **Retention**:
-How long archives stay in their bucket. A rule at your provider sets it, never userland,
-which can delete nothing from the dumps' bucket or fort's; without a rule they grow.
+How long objects stay in their bucket. A rule at your provider sets it, never userland,
+which deletes nothing it has written. fort's bucket may carry no rule at all, so its archives
+stay until someone removes them with restic, from a machine whose key may delete.
 _Avoid_: expiry, lifecycle (for the concept), cleanup, pruning
 
 **Globals**:

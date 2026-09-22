@@ -9,8 +9,8 @@ There is no application code here. userland is the ground your own projects stan
 and it is deliberately not one of them.
 
 > **This repo is being built in the open.** Today the interview writes `.env`, every verb
-> exists, and userland renders and runs traefik, the whole of Postgres — its doors, pgadmin and
-> its backup — ClickHouse, Metabase and n8n. The other containers arrive one at a time. The design is published as issues on this repo as
+> exists, and userland renders and runs traefik, the whole of Postgres — its doors and pgadmin —
+> ClickHouse, Metabase, n8n, and fort, which backs all of it up. The other containers arrive one at a time. The design is published as issues on this repo as
 > it is settled.
 
 `userland` is the part of a running system that is not the kernel: everything the machine
@@ -21,27 +21,25 @@ runs *for you*. This repo is that layer, for one host.
 | | |
 |---|---|
 | **The proxy** | traefik, terminating TLS for everything else. |
-| **The datastores** | One Postgres and one ClickHouse, shared: one of each for the whole host, never one per application. Postgres brings two doors, pgadmin and a backup that discovers what to archive. Redis is the exception: a product that needs it runs its own, inside the product, and nothing else is pointed at it. |
+| **The datastores** | One Postgres and one ClickHouse, shared: one of each for the whole host, never one per application. Postgres brings two doors and pgadmin. Redis is the exception: a product that needs it runs its own, inside the product, and nothing else is pointed at it. |
 | **The applications** | n8n, Metabase, Langfuse, Twenty, neo4j. |
-| **fort** | Keeps the files you name, `.env` first, in a bucket of their own as [restic](https://restic.net) snapshots, under a master key that never touches the host. |
+| **fort** | Keeps the files you name, `.env` first, and every database on Postgres and ClickHouse, in a bucket of its own as [restic](https://restic.net) snapshots, under a master key that never touches the host. |
 
 Two things are pointed at rather than run: an S3-compatible object store you bring, which
-the Postgres backup, Langfuse and fort each need a bucket of, and a secret store you own,
-which holds fort's master key.
+fort and Langfuse each need a bucket of, and a secret store you own, which holds fort's
+master key.
 
 The interview offers to make each of those for you on AWS, with admin credentials it uses
 once and never writes, and it adopts what already exists in your account rather than making
 a second one. Decline, and it prints a checklist with your names filled in, for any
-S3-compatible provider. Each bucket is reached by an access key of its own. The Postgres
-dumps' may write and never delete, so a compromised host cannot erase its own archives;
-fort's may delete under `locks/` and nowhere else; Langfuse's may delete, because its Data
-Retention feature does. Retention is yours where it is yours: set a rule at your provider for
-the dumps' bucket, or accept that it grows. Nothing may ever expire in fort's, and *Object
-store* says why.
+S3-compatible provider. Each bucket is reached by an access key of its own. fort's may delete
+under `locks/` and nowhere else, so a compromised host cannot erase its own archives;
+Langfuse's may delete, because its Data Retention feature does. Nothing may ever expire in
+fort's, and *Object store* says why.
 
 Each application gets its own database on the shared Postgres, owned by a user of the same
-name. The backup discovers databases by reading the server rather than by being handed a
-list, so a database is backed up from the day it exists.
+name. fort discovers databases by reading each server rather than by being handed a list,
+so a database is backed up from the day it exists.
 
 ## The shape
 
@@ -94,7 +92,6 @@ interview never asks again for what is already there.
 | `./bootstrap contract` | Print the Contract: what a consumer needs to use userland. |
 | `./bootstrap postgres database add NAME` | Make a consumer's database and user, and print the DSN once. `--session` names the session door; `--api` adds the PostgREST recipe. |
 | `./bootstrap postgres database remove NAME` | Drop a consumer's database and its users, after asking. |
-| `./bootstrap postgres backup now` | Archive every database and the globals into the bucket now, out of schedule. |
 | `./bootstrap apply` | Render, bring up, provision, print. |
 | `./bootstrap render` | Write `compose.yml` and stop. |
 | `./bootstrap provision` | Converge the door's auth user and every switched-on database, on Postgres and ClickHouse, and nothing else. |
@@ -102,7 +99,7 @@ interview never asks again for what is already there.
 | `./bootstrap check [--write]` | Assert the manifest and templates hold. `--write` regenerates `VARIABLES.md`. |
 
 `./bootstrap --help` lists the same verbs, grouped the same way; a product's verbs sit under
-the product's name, so `postgres` has `database` and `backup`.
+the product's name, so `postgres` has `database` and `fort` has its four.
 Every verb that changes `.env` ends with an apply, and every verb that drops something asks
 first and defaults to no.
 
@@ -120,8 +117,8 @@ first and defaults to no.
 5. Prints the URL of everything that answers HTTP and the `.env` lines you must copy off
    the machine because they cannot be regenerated.
 6. If fort is on, backs up. Every apply ends with a backup, so a host is kept from the day
-   fort is switched on, and a listed file that has gone missing fails the apply rather than
-   being noticed a month later.
+   fort is switched on, and a listed file that has gone missing or a database that will not
+   dump fails the apply rather than being noticed a month later.
 
 Switching traefik on or off recreates every HTTP container, because their labels and
 published ports change. That is expected and loses nothing.
@@ -259,10 +256,9 @@ adds a third:
 ```
 
 **Retention is yours, except where nothing may expire.** Nothing in userland deletes from a
-bucket whose key cannot, and the CLI never writes a lifecycle rule: a rule on a whole bucket
-would expire the base a later ClickHouse backup depends on, so any rule is prefix-scoped and set
-by you at your provider. The first time a bucket's container is switched on, the CLI says so;
-without a rule the bucket grows. A bucket the manifest marks `"never_expire": true` is the
+bucket whose key cannot, and the CLI never writes a lifecycle rule: any rule is set by you, at
+your provider. The first time a bucket's container is switched on, the CLI says so; without a
+rule the bucket grows. A bucket the manifest marks `"never_expire": true` is the
 exception, and it is not a preference. What it holds is one archive whose parts point at each
 other, so an object removed by age takes with it every later part that pointed at it. There the
 CLI tells you to set no rule at all, and S3 performs an expiration itself, so no bucket policy
@@ -272,9 +268,8 @@ can stop one you set by mistake. fort's bucket is the one.
 
 - **AWS.** Bucket, then user, then the inline policy above, then an access key. New buckets
   block public access, disable ACLs and encrypt at rest by default, so nothing else is set.
-  Retention is a lifecycle rule: an expiration on the dumps and, once ClickHouse's archive
-  shares the dumps' bucket, scoped to the dumps' prefix, because an expired base breaks every
-  increment after it. **No rule of any kind on fort's bucket**, not even a
+  Retention is a lifecycle rule, where a bucket allows one. **No rule of any kind on fort's
+  bucket**, not even a
   noncurrent-version expiration: the only versions that ever appear there are the ones
   something else left, which are both the evidence and the way back. AWS also recommends a
   rule that aborts incomplete multipart uploads after a few days; that one is yours too,
@@ -291,7 +286,7 @@ can stop one you set by mistake. fort's bucket is the one.
   `https://s3.<region>.backblazeb2.com`, region as in the endpoint. **This is the provider to
   pick without an AWS account.**
 - **Cloudflare R2.** A token of *Object Read & Write* scoped to the bucket. There is no level
-  that writes without deleting, so on R2 the dumps' key and fort's can delete, and a
+  that writes without deleting, so on R2 fort's key can delete anywhere in its bucket, and a
   compromised host could erase its own archives there. R2 has no versioning either, so fort's
   overwrite guard is absent as well; fort's own history is unaffected, because it never lived
   in versions. Both of those are R2's floor, not a setting: R2 is the weakest of the three for
@@ -348,16 +343,13 @@ cannot tell it apart from one that never ran.
 
 ## Postgres
 
-Five containers, each switched on by itself. `postgres-18` is the server: one Postgres for
+Four containers, each switched on by itself. `postgres-18` is the server: one Postgres for
 the whole host, with a database per product and per consumer, each owned by a user of the
 same name. `pgbouncer-transaction` and `pgbouncer-session` are the two doors, under *For a
-consumer*. `pgadmin` is the browser UI. `pg-backup` writes an archive of every database
-into a bucket you own.
+consumer*. `pgadmin` is the browser UI. Every database is archived by fort, under *fort*.
 
-**pgadmin and the backup bypass both doors**, and the layout is what enforces it: each one
-names `postgres-18:5432` directly, and pg-backup joins no network but `userland_postgres`,
-so it cannot take a pooled path by accident. `pg_dump` through a transaction pooler fails,
-and pgadmin keeps session state on its connections.
+**pgadmin and fort bypass both doors**: each names `postgres-18:5432` directly. `pg_dump`
+through a transaction pooler fails, and pgadmin keeps session state on its connections.
 
 ### pgadmin
 
@@ -387,70 +379,19 @@ Its session cookie is marked secure only in public visibility, where there is TL
 ride; in local, a secure cookie is a login that never completes. It is told there is exactly
 one proxy in front of it while traefik is on, and none while traefik is off.
 
-### The backup
-
-`@daily`, or whatever `BACKUP_SCHEDULE` holds, by
-[`scripts/backup.sh`](scripts/backup.sh) inside `siemens/postgres-backup-s3:18` — an image
-that brings the S3 client, the scheduler and a `pg_dump` of the server's own major. The
-script is mounted over the image's own, so **nothing is built for this**.
-
-It reads `pg_database`, so **no database is ever named**: one is archived from the day it
-exists, and a database that is dropped stops appearing. `BACKUP_EXCLUDE_DATABASES` is the
-only list, `postgres` by default, which holds nothing of yours. Each run writes
-
-```
-<database>/<timestamp>.dump.gpg
-globals/<timestamp>.sql.gpg
-```
-
-each encrypted with `gpg --symmetric` under `BACKUP_PASSPHRASE`. **Lose that passphrase and
-every archive is waste**; it is one of the lines the CLI tells you to copy off the machine
-when it finishes, and fort keeps it for you once fort is on.
-
-The globals file is there because a user is a **cluster** object: it lives outside every
-database, so `pg_dump` does not carry it, and an archive restored into a Postgres that holds
-no users fails on the first `ALTER TABLE … OWNER TO`. That one file carries the stored
-password verifier of every user on the server, so it is as sensitive as the data.
-
-**Retention is yours, and it has to be.** The access key that writes these archives cannot
-delete, by design, so nothing in userland — and nothing that breaks into this host — can
-trim this bucket; without a rule at your provider it grows for as long as it runs. The CLI
-says so when it first asks for the bucket, the checklist says it again, and *Object store*
-says what a rule looks like at each provider.
-
-`./bootstrap postgres backup now` runs one out of schedule and prints what it wrote.
-**Nobody is told when a scheduled one fails.** A run exits non-zero if any database failed
-**or if the set came back empty** — an empty set looks exactly like a clean run and is the
-worst of the failures — but until userland runs something that watches, you find out by
-reading `docker logs pg-backup`. `scripts/backup.sh` is a single-file bind mount, which
-pins the inode: editing it does not reach a running container, and an apply recreates it.
-
-**Restoring is by hand, and a restore nobody has rehearsed is not a backup.** Into a
-throwaway database, which is the drill:
-
-```sh
-aws s3 cp s3://BUCKET/DATABASE/TIMESTAMP.dump.gpg .
-gpg --decrypt --batch --passphrase "PASSPHRASE" TIMESTAMP.dump.gpg > db.dump
-docker exec postgres-18 createdb -U postgres drill
-docker exec -i postgres-18 pg_restore -U postgres --no-owner --no-acl -d drill < db.dump
-```
-
-Back into the running server the user already exists, so drop `--no-owner --no-acl` and name
-the real database. Into a Postgres that holds nothing, restore the globals file first, with
-`psql`, and the databases after it.
-
 ## ClickHouse
 
 userland runs ClickHouse as one container. langfuse calls that development-only, because one
 box has no redundancy. Every event langfuse ingests is written to your bucket first, and
-Postgres holds everything you configure; ClickHouse holds what you see in the UI. A backup of
-its volume is not here yet.
+Postgres holds everything you configure; ClickHouse holds what you see in the UI. fort
+archives every database on it, under *fort*.
 
 The image is `clickhouse/clickhouse-server:26.8`, the long-term-support line after the 26.4
 that langfuse recommends, and it moves within that line. The container runs at ClickHouse's
 own defaults, in UTC, which langfuse requires, with the one setting the image documents,
-`nofile 262144`. `CLICKHOUSE_PASSWORD` is the admin user `default`, which provisioning uses
-and no product does; the image turns on access management for it, so it may create users.
+`nofile 262144`. `CLICKHOUSE_PASSWORD` is the admin user `default`, which provisioning and
+fort use and no product does; the image turns on access management for it, so it may create
+users.
 
 **Every product gets its own database and user on ClickHouse, made by provisioning, exactly
 as on Postgres.** The template holds nothing product-specific, and the image's `CLICKHOUSE_DB`
@@ -470,6 +411,10 @@ ClickHouse logs at trace level to files inside the container, in `/var/log/click
 rotated by the image; `docker logs clickhouse` shows only the entrypoint. Nothing is published
 on the host: products reach it on `userland_clickhouse`, ports 8123 for HTTP and 9000 for the
 native protocol, and you reach it with `docker exec clickhouse clickhouse-client`.
+
+Its backup directory, `/var/lib/clickhouse/backups`, is a volume of its own,
+`clickhouse_backups`. fort mounts it too while both are on, and it holds nothing between
+runs.
 
 ## n8n
 
@@ -500,7 +445,7 @@ into the volume where you would have to go and find it, and the CLI names the li
 finishes: copy it off the machine, or switch on fort.
 
 **The volume needs no backup.** Postgres holds the workflows, the credentials and every
-execution, so the Postgres backup covers them. `n8n_data` holds only what n8n rebuilds: the
+execution, so fort's archive of Postgres covers them. `n8n_data` holds only what n8n rebuilds: the
 binary data of an execution, which n8n prunes together with the execution that owns it; the
 settings file, which comes back from `.env` because the key is pinned there; the node cache;
 and any community node, which `N8N_REINSTALL_MISSING_PACKAGES` reinstalls from n8n's own
@@ -611,8 +556,8 @@ Before that apply:
 1. Read every release note between the two versions. What bites is rarely in the migrations:
    a major can move the sample database's engine, break the driver plugin API so a
    third-party driver needs rebuilding, or move the bundled JVM.
-2. Take a fresh archive with `./bootstrap postgres backup now`. Last night's is not one
-   minute ago, and this one is the rollback.
+2. Take a fresh archive with `./bootstrap fort backup`. Last night's is not one minute ago,
+   and this one is the rollback.
 3. Rehearse on another machine: restore that archive into a throwaway Postgres, start the new
    tag against it, and compare the counts of dashboards, questions and users, `/api/health`,
    and the schema version in the log. The rehearsal needs the key, since an encrypted
@@ -627,15 +572,16 @@ on a starved entropy pool, and that shows as a start that hangs rather than one 
 **The volume needs no backup.** Metabase downloads its own driver JARs into
 `metabase_plugins` at start. A third-party driver you put there by hand is the one thing that
 would not come back: keep your own copy, and expect to rebuild it after a major upgrade. The
-database is on Postgres, so the Postgres backup archives it with everything else.
+database is on Postgres, so fort archives it with everything else.
 
 The two row limits, both connection pools and every other number run at Metabase's defaults.
 
 ## fort
 
-fort keeps the files you name off this host, so that losing the host is not losing your
-secrets. It is one container, it requires nothing, and it is the only thing here that backs
-up something outside userland.
+fort keeps off this host what you cannot lose with it: the files you name, and every database
+on Postgres and ClickHouse while each is on. It is one container and it requires nothing; it
+is the only thing here that backs up something outside userland, and the only thing that backs
+up anything at all.
 
 `FORT_FILES` is the list: absolute paths, separated by colons. Switching fort on puts this
 clone's `.env` at the head of it, because that one file holds every secret of every container
@@ -644,11 +590,39 @@ host; `remove PATH…` stops keeping one, and refuses this clone's `.env` while 
 listed path has its **directory** mounted read-only at the same place under `/files`, so fort
 can read the file and can write nothing.
 
+**Postgres.** While `postgres-18` is on, every run archives the globals and every database but
+`postgres`, read from `pg_database`, so **no database is ever named**: one is archived from the
+day it exists, and one that is dropped stops appearing. Each is `pg_dump` in custom format
+streamed straight into restic, so nothing is staged on disk, and a dump that fails saves no
+snapshot. The dump is left uncompressed, because restic compresses what it stores and finds
+far more to deduplicate in a dump that is not already compressed. fort connects as the
+superuser, to `postgres-18:5432` directly, with the `pg_dump` 18 its image carries; the client
+has to match the server's major. The globals file is there because a user is a **cluster**
+object: it lives outside every database, so `pg_dump` does not carry it, and a database restored
+into a Postgres that holds no users fails on the first `ALTER TABLE … OWNER TO`. That one file
+carries the stored password verifier of every user on the server, so it is as sensitive as the
+data.
+
+**ClickHouse.** While `clickhouse` is on, every run archives every database but ClickHouse's
+own three, `system`, `information_schema` and `INFORMATION_SCHEMA`; `default` is included.
+fort asks ClickHouse over HTTP, as `default`, to `BACKUP DATABASE … TO File(…)` into its backup
+directory, which is the volume `clickhouse_backups` that both containers mount. restic reads
+what ClickHouse wrote there, and fort empties it again. **The host needs free disk for one full
+copy of ClickHouse's databases while a run is going.** fort hands that directory to uid 101,
+the ClickHouse image's own user, before each run, because a volume Docker creates belongs to
+root. The password reaches `curl` on its standard input, never on a command line. No file of
+users is kept, because provisioning makes every ClickHouse user from `.env`. ClickHouse can
+write a backup to S3 by itself, and fort does not use that: a backup to S3 deletes its own lock
+file when it finishes, so a key that may not delete fails every one, and ClickHouse cannot
+encrypt an archive it writes to S3 at all.
+
 **What is in the bucket.** restic snapshots, and nothing you can read without the master key.
 Each object is named after the hash of its own contents, so nothing is ever overwritten and
-nothing is ever a file path; every backup adds a snapshot, and the list of snapshots is the
-history. There is no `.gpg` next to a familiar name to grab, and equally no way to get a file
-back except through restic with the key.
+nothing is ever a file path; every backup adds snapshots, and the list of snapshots is the
+history. One run makes one snapshot tagged `files`, one tagged `postgres` for the globals and
+for each database, and one tagged `clickhouse` holding every ClickHouse database;
+`docker exec fort restic snapshots` lists them. There is no `.gpg` next to a familiar name to
+grab, and equally no way to get anything back except through restic with the key.
 
 **The master key is the repository password**, read out of your secret store at the start of
 every run by `scripts/fort-key`, held in memory, and written nowhere — not in `.env`, not on
@@ -656,13 +630,17 @@ disk, not in the bucket, which holds it only as ciphertext that the password unl
 **replacing the parameter's value does not re-key anything; it locks fort out of its own
 archive.** That is why the offer adopts a parameter that exists and never overwrites it.
 
-**Retention: never prune, nothing expires.** fort only ever adds. A run where nothing changed
-adds one snapshot of about 400 bytes, so the archive grows by bytes a day and a year of daily
-backups is about 150 KB. `forget` and `prune`, which are how restic reclaims space, need
-delete rights the key does not have, and so do `unlock --remove-all`, `rewrite` and `tag`: if
-you ever want them, restic's own guidance is a separate, well-secured machine with a
-delete-capable key, never this host. And **set no lifecycle rule on this bucket**: see *Object
-store*.
+**Retention: never prune, nothing expires.** fort only ever adds. Every run is a full backup,
+so each snapshot restores alone, but restic stores only the chunks it has not seen before, so
+a run adds roughly what changed since the last one. A large database that did not change adds
+almost nothing. A small one is stored whole again whenever it changes at all, because it is
+only a chunk or two, and the globals file changes on every run. **The archive keeps everything,
+including what you delete**: a row dropped from a database, a trace langfuse's own Data
+Retention removes, a file you stop keeping — every earlier snapshot still holds it. `forget` and
+`prune`, which are how restic reclaims space, need delete rights the key does not have, and so
+do `unlock --remove-all`, `rewrite` and `tag`: if you ever want them, restic's own guidance is a
+separate, well-secured machine with a delete-capable key, never this host. And **set no
+lifecycle rule on this bucket**: see *Object store*.
 
 **Versioning guards against overwrite, not loss.** fort's key can put an object but not delete
 one — and a put overwrites. A host that has been broken into can therefore write garbage over
@@ -675,27 +653,64 @@ what it does not have.
 
 **The image is this repo's own**, the only one it builds, so `apply` passes `--build`. It is
 `restic/restic:0.19.1` plus `ssmget`, a small Go program built in a stage of its own that reads
-the one parameter through Amazon's own library. The pin matters: a listed file that has gone
-missing exits 3 only since restic 0.19.0, and before that it was a silent success. Process 1 is
-busybox `crond`, which the image already carries, reading `FORT_SCHEDULE` (`@daily` unless you
-set it). crond hands a job almost no environment, so the entrypoint saves its own with
-`export -p` into `/run/fort.env`, mode 600, and the scheduled line sources it.
+the one parameter through Amazon's own library, and Alpine's `curl` and `postgresql18-client`.
+The pin matters: a listed file that has gone missing exits 3 only since restic 0.19.0, and before
+that it was a silent success. Process 1 is busybox `crond`, which the image already carries,
+reading `FORT_SCHEDULE` (`@daily` unless you set it). crond hands a job almost no environment, so
+the entrypoint saves its own with `export -p` into `/run/fort.env`, mode 600, and the scheduled
+line sources it. `./bootstrap fort backup` runs the same backup inside the running container,
+now, and every apply ends with one.
 
-**A missing file fails the run and still makes a snapshot.** restic backs up what it can find,
-warns, and exits 3; fort reports that as a failure, and an apply that ends in one fails. But the
-partial snapshot is real and it is now the latest, so the file that was missing is not in it. A
-restore lists every path it is about to write before it writes anything, which is where you see
-the gap; an earlier snapshot still holds the file, and getting it from there is restic on another
-machine.
+**A part that fails fails the run, and the rest is still kept.** A database whose dump fails
+saves no snapshot, and a ClickHouse that cannot be reached saves none of its databases; the
+files and every other database are kept regardless, and the run exits non-zero naming what was
+not. A missing listed file is restic's own case: restic backs up what it can find, warns, and
+exits 3, so the partial snapshot is real and it is now the latest, and the file that was missing
+is not in it. A restore lists every path it is about to write before it writes anything, which
+is where you see the gap; an earlier snapshot still holds the file. **Nobody is told when a
+scheduled run fails**: until userland runs something that watches, `docker logs fort` and the
+snapshot list are the evidence.
 
-**Restore needs nothing but the bucket and the key.** `./bootstrap fort restore` works in a clone
-with no `.env` at all — which is the case a restore is for. It asks where the bucket and the
-master key are, builds the image, then runs it twice with no host mount: once to list the latest
-snapshot, so you see every path with the time that file was last changed, and once to stream a tar
-which the CLI unpacks onto `/`. Every file lands back at its own absolute path with its own mode
-and time, so `.env` comes back at 600. It assumes the host is laid out as the old one was; run it
-as a user that may write those paths. Then `./bootstrap` brings the stack up against what came
-back, and provisioning converges each database user to the password the restored `.env` holds.
+**Files come back from the bucket and the key alone.** `./bootstrap fort restore` works in a
+clone with no `.env` at all — which is the case a restore is for. It asks where the bucket and
+the master key are, builds the image, then runs it twice with no host mount: once to list the
+latest `files` snapshot, so you see every path with the time that file was last changed, and
+once to stream a tar which the CLI unpacks onto `/`. Every file lands back at its own absolute
+path with its own mode and time, so `.env` comes back at 600. It assumes the host is laid out as
+the old one was; run it as a user that may write those paths. Then `./bootstrap` brings the
+stack up against what came back, and provisioning converges each database user to the password
+the restored `.env` holds.
+
+**Databases come back by hand, through the running fort, and a restore nobody has rehearsed is
+not a backup.** Into a throwaway database on the running Postgres, which is the drill:
+
+```sh
+docker exec postgres-18 createdb -U postgres drill
+docker exec fort restic dump --path /postgres/DATABASE.dump latest /postgres/DATABASE.dump \
+  | docker exec -i postgres-18 pg_restore -U postgres --no-owner --no-acl -d drill
+```
+
+Back into the running server the user already exists, so drop `--no-owner --no-acl` and name
+the real database. Into a Postgres that holds nothing, restore the globals first, streamed from
+`/postgres/globals.sql` the same way into `psql -U postgres`, and the databases after it; the
+only error it prints is that the image's own `postgres` user already exists. On ClickHouse, into
+a database of another name:
+
+```sh
+docker exec fort restic dump --tag clickhouse latest:/clickhouse /DATABASE --archive tar \
+  | docker exec -i -u clickhouse clickhouse tar -x -C /var/lib/clickhouse/backups
+docker exec clickhouse clickhouse-client -q "RESTORE DATABASE DATABASE AS drill FROM File('DATABASE')"
+```
+
+fort's next run empties the backup directory again. An earlier snapshot takes its ID in place
+of `latest`, and `docker exec fort restic snapshots --path /postgres/DATABASE.dump` lists one
+database's.
+
+**If you ran `pg-backup`.** Until 2026-09-23 Postgres had a fifth container, `pg-backup`, which
+wrote gpg-encrypted dumps into a bucket of its own. The next run drops it from the selection and
+says so. Its archives stay in that bucket, and `BACKUP_PASSPHRASE`, which is the only way to read
+them, stays in `.env` with the `PG_BACKUP_` lines, because nothing here removes a secret that is
+the last key to an archive. Delete those lines when you no longer need those archives.
 
 ## For a consumer
 
@@ -763,8 +778,8 @@ property its kind has no use for.
 | `manifest.json` | What every container depends on and what it needs asked. The CLI trusts nothing else. |
 | `VARIABLES.md` | Every variable `.env` may hold, by container. Generated; `check` fails when it is stale. |
 | `compose/` | One template per product. The CLI renders `compose.yml` from them; nothing is ever run from inside it. |
-| `scripts/` | Shell that runs inside a container — the backups' schedules, the dump, fort's entrypoint and its password command. Nothing here runs on the host. |
-| `Dockerfile` | fort's image, the only one this repo builds: restic plus a reader for the secret store. |
+| `scripts/` | Shell that runs inside a container — fort's entrypoint, which is its schedule and its backup, and its password command. Nothing here runs on the host. |
+| `Dockerfile` | fort's image, the only one this repo builds: restic, a reader for the secret store, and the Postgres and HTTP clients its backup needs. |
 | `ssmget/` | That reader, a Go module of its own so the CLI never takes a cloud SDK as a dependency. |
 | `initdb/` | First-start initialisation for a datastore. Runs once, against an empty volume, and never again. Empty today: what used to live here is provisioned instead. |
 | `config/` | Configuration files a container mounts, checked in because they hold nothing secret. pgadmin's one server is the first. |
@@ -792,7 +807,7 @@ is missing as you fill them in.
 | `postgres` | The `database` this container gets on Postgres, which is also its user's name, and the `.env` variable holding its `password`. Two containers naming one database share it, and must name the same `settings`. It implies `postgres-18` is on. Optional `settings`, as `{"statement_timeout": "5min"}`, are Postgres settings provisioning puts on the user with `ALTER ROLE … SET`, so they reach every connection regardless of the door. |
 | `clickhouse` | The `database` this container gets on ClickHouse, also its user's name, and the `.env` variable holding its `password`; a different variable from the Postgres one. Two containers naming one database share it. It implies `clickhouse` is on. No `settings`. |
 | `ports` | Ports published on every interface. traefik alone. |
-| `volumes` | Named volumes this container mounts. The top-level `volumes` block, "left behind" and `reclaim` all read this. |
+| `volumes` | Named volumes this container mounts. The top-level `volumes` block, "left behind" and `reclaim` all read this. A container may also mount a volume declared on one it depends on, as fort mounts ClickHouse's `clickhouse_backups`; the volume stays the declaring container's. |
 | `asks` | `var`, `type`, `prompt`, optional `when` (`public`, `local` or `VAR=value`) and `keep`. Types: `text hostname email url port secret generated choice paths`, described under *The interview*. |
 | `external` | `{"PREFIX": {"kind": "bucket"}}`, or `{"kind": "secret-store"}`. A bucket takes `"versioned": true`, `"never_expire": true`, and `"delete"` as `"*"` for any object or a prefix like `"locks/*"` for objects under it; left out, the key may never delete. The kind supplies five variables under the prefix, and the interview asks them with the offer and the checklist, under *Object store* and *Secret store*. Two containers naming one prefix share it and must describe it alike. |
 | `files` | The variable holding absolute paths this container keeps, separated by colons. Each path's directory is mounted read-only at the same place under `/files`. fort is the one, under *fort*. |
@@ -821,13 +836,13 @@ is missing as you fill them in.
 
 ### Names the CLI knows
 
-Eight names are kinds the CLI defines rather than manifest data: `traefik`, whose
+Seven names are kinds the CLI defines rather than manifest data: `traefik`, whose
 presence decides labels and loopback ports; `postgres-18`, which provisioning execs into
 and which every container with a Postgres database requires; `clickhouse`, the same for a
 ClickHouse database; `pgbouncer-transaction` and `pgbouncer-session`, the two doors the
-Contract names; `pgbouncer_auth`, the user both doors look passwords up with; `pg-backup`,
-which `postgres backup now` execs into; and `fort`, whose verbs run its image directly and
-whose presence makes an apply end with a backup.
+Contract names; `pgbouncer_auth`, the user both doors look passwords up with; and `fort`,
+whose `backup` execs into it, whose `restore` runs its image directly, and whose presence
+makes an apply end with a backup.
 
 ## Notes
 
