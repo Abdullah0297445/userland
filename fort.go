@@ -16,7 +16,7 @@ import (
 func fortCommand(root string) *cobra.Command {
 	keep := &cobra.Command{
 		Use:     fort.Product,
-		Short:   "fort: the files it keeps off this host, and the way back from the bucket alone.",
+		Short:   "fort: the files and databases it keeps off this host, and the way back from the bucket alone.",
 		GroupID: products,
 	}
 	add := &cobra.Command{
@@ -45,7 +45,7 @@ func fortCommand(root string) *cobra.Command {
 	}
 	backup := &cobra.Command{
 		Use:   "backup",
-		Short: "Back up every kept file now, and say what the run added.",
+		Short: "Back up every kept file and every database now, and say what the run added.",
 		Args:  cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
 			m, e, err := load(root)
@@ -179,10 +179,8 @@ func backUp(e *env.File, root string) error {
 	case fort.Foreign:
 		return fmt.Errorf("the bucket already holds an archive that this master key does not open; point fort at another bucket, or find the key that made this one. Nothing was written")
 	}
-	out, err := fort.Backup(e)
-	say(out)
-	if err != nil {
-		return fmt.Errorf("fort's backup failed: %w", err)
+	if err := fort.Backup(); err != nil {
+		return fmt.Errorf("fort's backup failed: %w; the lines above name what was not kept, and every snapshot already in the bucket is untouched", err)
 	}
 	return nil
 }

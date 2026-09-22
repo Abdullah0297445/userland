@@ -217,10 +217,10 @@ func leftBehind(m *manifest.Manifest, on []string, c *manifest.Container) leftov
 	for _, v := range c.Volumes {
 		name := render.VolumeName(v)
 		l.volumes = append(l.volumes, name)
-		switch c.Name {
-		case manifest.Postgres:
+		switch v {
+		case manifest.PostgresData:
 			l.notes[name] = "every database on Postgres lives in it"
-		case manifest.ClickHouse:
+		case manifest.ClickHouseData:
 			l.notes[name] = "every database on ClickHouse lives in it"
 		}
 	}

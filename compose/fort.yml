@@ -18,10 +18,22 @@ environment:
   FORT_KEY_SECRET_ACCESS_KEY: ${FORT_KEY_SECRET_ACCESS_KEY}
   FORT_FILES: ${FORT_FILES:-}
   FORT_SCHEDULE: ${FORT_SCHEDULE:-@daily}
-{{- if .Mounts }}
+{{- if .On "postgres-18" }}
+  PGHOST: postgres-18
+  PGUSER: postgres
+  PGPASSWORD: ${POSTGRES_PASSWORD}
+{{- end }}
+{{- if .On "clickhouse" }}
+  CLICKHOUSE_HOST: clickhouse
+  CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+{{- end }}
+{{- if or .Mounts (.On "clickhouse") }}
 volumes:
 {{- range .Mounts }}
   - {{ . }}
+{{- end }}
+{{- if .On "clickhouse" }}
+  - clickhouse_backups:/clickhouse
 {{- end }}
 {{- end }}
 {{ end }}

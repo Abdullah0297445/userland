@@ -361,7 +361,7 @@ func Checklist(prefix string, x manifest.External, name, region string) string {
 func retention(x manifest.External) string {
 	switch {
 	case x.NeverExpire:
-		return "Nothing may expire here. What this bucket holds is one archive\n   whose parts point at each other, so a rule that deletes an object by age\n   destroys the rest of it. It grows by bytes a day. Set no rule."
+		return "Nothing may expire here. What this bucket holds is one archive\n   whose parts point at each other, so a rule that deletes an object by age\n   destroys the rest of it. It grows by what changes between runs, and\n   keeps what you delete. Set no rule."
 	case x.DeletesAnywhere():
 		return "The container deletes on its own schedule; a rule for what it leaves\n   behind is yours."
 	case x.Versioned:
@@ -373,7 +373,7 @@ func retention(x manifest.External) string {
 func Retention(prefix string, x manifest.External) string {
 	switch {
 	case x.NeverExpire:
-		return prefix + ": nothing may expire in this bucket; it holds one archive whose parts point at each other, so a rule that deletes an object by age destroys the rest of it. It grows by bytes a day."
+		return prefix + ": nothing may expire in this bucket; it holds one archive whose parts point at each other, so a rule that deletes an object by age destroys the rest of it. It grows by what changes between runs, and keeps what you delete."
 	case x.DeletesAnywhere():
 		return prefix + ": the container deletes from this bucket on its own schedule; a rule for what it leaves behind is yours."
 	case x.Versioned:
