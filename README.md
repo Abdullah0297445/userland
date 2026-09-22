@@ -9,8 +9,8 @@ There is no application code here. userland is the ground your own projects stan
 and it is deliberately not one of them.
 
 > **This repo is being built in the open.** Today the interview writes `.env`, every verb
-> exists, and userland renders and runs traefik, Postgres with its doors, ClickHouse, Metabase
-> and n8n. The other containers arrive one at a time. The design is published as issues on this repo as
+> exists, and userland renders and runs traefik, the whole of Postgres — its doors, pgadmin and
+> its backup — ClickHouse, Metabase and n8n. The other containers arrive one at a time. The design is published as issues on this repo as
 > it is settled.
 
 `userland` is the part of a running system that is not the kernel: everything the machine
@@ -21,7 +21,7 @@ runs *for you*. This repo is that layer, for one host.
 | | |
 |---|---|
 | **The proxy** | traefik, terminating TLS for everything else. |
-| **The datastores** | One Postgres and one ClickHouse, shared: one of each for the whole host, never one per application. Redis is the exception: a product that needs it runs its own, inside the product, and nothing else is pointed at it. |
+| **The datastores** | One Postgres and one ClickHouse, shared: one of each for the whole host, never one per application. Postgres brings two doors, pgadmin and a backup that discovers what to archive. Redis is the exception: a product that needs it runs its own, inside the product, and nothing else is pointed at it. |
 | **The applications** | n8n, Metabase, Langfuse, Twenty, neo4j. |
 | **fort** | Keeps the files you name, `.env` first, in a bucket of their own as [restic](https://restic.net) snapshots, under a master key that never touches the host. |
 
@@ -94,6 +94,7 @@ interview never asks again for what is already there.
 | `./bootstrap contract` | Print the Contract: what a consumer needs to use userland. |
 | `./bootstrap postgres database add NAME` | Make a consumer's database and user, and print the DSN once. `--session` names the session door; `--api` adds the PostgREST recipe. |
 | `./bootstrap postgres database remove NAME` | Drop a consumer's database and its users, after asking. |
+| `./bootstrap postgres backup now` | Archive every database and the globals into the bucket now, out of schedule. |
 | `./bootstrap apply` | Render, bring up, provision, print. |
 | `./bootstrap render` | Write `compose.yml` and stop. |
 | `./bootstrap provision` | Converge the door's auth user and every switched-on database, on Postgres and ClickHouse, and nothing else. |
@@ -101,7 +102,7 @@ interview never asks again for what is already there.
 | `./bootstrap check [--write]` | Assert the manifest and templates hold. `--write` regenerates `VARIABLES.md`. |
 
 `./bootstrap --help` lists the same verbs, grouped the same way; a product's verbs sit under
-the product's name, so `postgres` has `database`, and a later backup verb would join it there.
+the product's name, so `postgres` has `database` and `backup`.
 Every verb that changes `.env` ends with an apply, and every verb that drops something asks
 first and defaults to no.
 
@@ -326,6 +327,99 @@ returns; a `SecureString` written without a key of your own is encrypted under i
 
 By hand: the parameter, the user, the policy, the access key, in that order. The key may only
 read that one parameter, and nothing it holds writes.
+
+## Postgres
+
+Five containers, each switched on by itself. `postgres-18` is the server: one Postgres for
+the whole host, with a database per product and per consumer, each owned by a user of the
+same name. `pgbouncer-transaction` and `pgbouncer-session` are the two doors, under *For a
+consumer*. `pgadmin` is the browser UI. `pg-backup` writes an archive of every database
+into a bucket you own.
+
+**pgadmin and the backup bypass both doors**, and the layout is what enforces it: each one
+names `postgres-18:5432` directly, and pg-backup joins no network but `userland_postgres`,
+so it cannot take a pooled path by accident. `pg_dump` through a transaction pooler fails,
+and pgadmin keeps session state on its connections.
+
+### pgadmin
+
+It registers exactly one server, `postgres-18`, from
+[`config/pgadmin-servers.json`](config/pgadmin-servers.json), loaded into an empty
+`pgadmin_data` volume at the first start and never again.
+`PGADMIN_REPLACE_SERVERS_ON_STARTUP` is deliberately not set: it deletes every server row
+and re-imports at each start, and a password saved in the browser is part of the row it
+deletes. The trade is that editing that file does not reach a pgadmin that has already
+run — change the server in the browser too, or switch pgadmin off, reclaim its volume and
+switch it back on to re-seed.
+
+That server connects as the superuser, and its password is not in the file: paste
+`POSTGRES_PASSWORD` from `.env` the first time, and pgadmin keeps an encrypted copy in its
+volume if you tick *Save password*.
+
+**Its own login is the only lock**, and it stands in front of the superuser of every
+database on this host. The email and password the interview asks for are what you sign in
+with; nothing else is in the way, in either visibility. The container is created with them
+only when its volume is empty, so changing either line in `.env` afterwards does not change
+the login of a pgadmin that has already started — switch it off, reclaim the volume, and
+switch it on again, which costs one server row and a saved password. The image floats on
+`latest` on purpose, so security fixes arrive without review, and its volume needs no
+backup for the same reason.
+
+Its session cookie is marked secure only in public visibility, where there is TLS for it to
+ride; in local, a secure cookie is a login that never completes. It is told there is exactly
+one proxy in front of it while traefik is on, and none while traefik is off.
+
+### The backup
+
+`@daily`, or whatever `BACKUP_SCHEDULE` holds, by
+[`scripts/backup.sh`](scripts/backup.sh) inside `siemens/postgres-backup-s3:18` — an image
+that brings the S3 client, the scheduler and a `pg_dump` of the server's own major. The
+script is mounted over the image's own, so **nothing is built for this**.
+
+It reads `pg_database`, so **no database is ever named**: one is archived from the day it
+exists, and a database that is dropped stops appearing. `BACKUP_EXCLUDE_DATABASES` is the
+only list, `postgres` by default, which holds nothing of yours. Each run writes
+
+```
+<database>/<timestamp>.dump.gpg
+globals/<timestamp>.sql.gpg
+```
+
+each encrypted with `gpg --symmetric` under `BACKUP_PASSPHRASE`. **Lose that passphrase and
+every archive is waste**; it is one of the lines the CLI tells you to copy off the machine
+when it finishes, and fort keeps it for you once fort is on.
+
+The globals file is there because a user is a **cluster** object: it lives outside every
+database, so `pg_dump` does not carry it, and an archive restored into a Postgres that holds
+no users fails on the first `ALTER TABLE … OWNER TO`. That one file carries the stored
+password verifier of every user on the server, so it is as sensitive as the data.
+
+**Retention is yours, and it has to be.** The access key that writes these archives cannot
+delete, by design, so nothing in userland — and nothing that breaks into this host — can
+trim this bucket; without a rule at your provider it grows for as long as it runs. The CLI
+says so when it first asks for the bucket, the checklist says it again, and *Object store*
+says what a rule looks like at each provider.
+
+`./bootstrap postgres backup now` runs one out of schedule and prints what it wrote.
+**Nobody is told when a scheduled one fails.** A run exits non-zero if any database failed
+**or if the set came back empty** — an empty set looks exactly like a clean run and is the
+worst of the failures — but until userland runs something that watches, you find out by
+reading `docker logs pg-backup`. `scripts/backup.sh` is a single-file bind mount, which
+pins the inode: editing it does not reach a running container, and an apply recreates it.
+
+**Restoring is by hand, and a restore nobody has rehearsed is not a backup.** Into a
+throwaway database, which is the drill:
+
+```sh
+aws s3 cp s3://BUCKET/DATABASE/TIMESTAMP.dump.gpg .
+gpg --decrypt --batch --passphrase "PASSPHRASE" TIMESTAMP.dump.gpg > db.dump
+docker exec postgres-18 createdb -U postgres drill
+docker exec -i postgres-18 pg_restore -U postgres --no-owner --no-acl -d drill < db.dump
+```
+
+Back into the running server the user already exists, so drop `--no-owner --no-acl` and name
+the real database. Into a Postgres that holds nothing, restore the globals file first, with
+`psql`, and the databases after it.
 
 ## ClickHouse
 
@@ -564,7 +658,7 @@ property its kind has no use for.
 | `Dockerfile` | fort's image, the only one this repo builds: restic plus a reader for the secret store. |
 | `ssmget/` | That reader, a Go module of its own so the CLI never takes a cloud SDK as a dependency. |
 | `initdb/` | First-start initialisation for a datastore. Runs once, against an empty volume, and never again. Empty today: what used to live here is provisioned instead. |
-| `config/` | Configuration files a container mounts, checked in because they hold nothing secret. |
+| `config/` | Configuration files a container mounts, checked in because they hold nothing secret. pgadmin's one server is the first. |
 | `consumer/` | Files you copy into a project of your own. userland never runs them. |
 | `main.go`, `internal/` | The CLI, in Go, on the standard library plus [huh](https://github.com/charmbracelet/huh) for the prompts and [cobra](https://github.com/spf13/cobra) for the verbs. |
 
@@ -618,12 +712,13 @@ is missing as you fill them in.
 
 ### Names the CLI knows
 
-Seven names are kinds the CLI defines rather than manifest data: `traefik`, whose
+Eight names are kinds the CLI defines rather than manifest data: `traefik`, whose
 presence decides labels and loopback ports; `postgres-18`, which provisioning execs into
 and which every container with a Postgres database requires; `clickhouse`, the same for a
 ClickHouse database; `pgbouncer-transaction` and `pgbouncer-session`, the two doors the
-Contract names; `pgbouncer_auth`, the user both doors look passwords up with; and `fort`,
-whose verbs run its image directly and whose presence makes an apply end with a backup.
+Contract names; `pgbouncer_auth`, the user both doors look passwords up with; `pg-backup`,
+which `postgres backup now` execs into; and `fort`, whose verbs run its image directly and
+whose presence makes an apply end with a backup.
 
 ## Notes
 
