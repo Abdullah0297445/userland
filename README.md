@@ -328,6 +328,24 @@ returns; a `SecureString` written without a key of your own is encrypted under i
 By hand: the parameter, the user, the policy, the access key, in that order. The key may only
 read that one parameter, and nothing it holds writes.
 
+## traefik
+
+traefik is the one container that publishes on every interface, on ports 80 and 443. Every
+HTTP container is reached through it by the labels the generator writes from the manifest,
+and none holds a certificate or a redirect of its own: in public visibility the `web`
+entrypoint sends every plain-HTTP request to `websecure` before any router is matched.
+
+**Certificates come over a DNS-01 challenge**, from Let's Encrypt, through the provider
+`DNS_PROVIDER` names. A certificate can therefore be issued before the hostname has a public
+DNS record, but nothing answers on the hostname until it does. The propagation check asks the
+public resolvers `1.1.1.1` and `8.8.8.8` rather than the host's own, and on Route 53 the
+template passes no `AWS_HOSTED_ZONE_ID`, so the zone of each hostname is found for it; both
+are what let one host hold certificates in more than one DNS zone.
+
+**It logs at `INFO`**, not traefik's default of `ERROR`, so every certificate issued or renewed
+is a line in `docker logs traefik`. At `ERROR` a renewal that succeeded logs nothing, and you
+cannot tell it apart from one that never ran.
+
 ## Postgres
 
 Five containers, each switched on by itself. `postgres-18` is the server: one Postgres for
@@ -521,6 +539,97 @@ n8n never sees it and always listens on 5678 inside its container.
 
 n8n runs in n8n's regular mode: no queue, no worker, no Redis. Pruning, the pool and every
 other number run at n8n's defaults.
+
+## Metabase
+
+Metabase is one container and one JVM: the web UI, the query engine, the scheduler, and the
+MCP server at `/api/metabase-mcp`. Its database, `metabase` on Postgres, holds every
+dashboard, question, user and setting, and the credentials of every data source you connect.
+Without traefik it listens on `127.0.0.1:3000`.
+
+**Its database is reached through the transaction door.** Nothing Metabase does against its
+own database needs the session door: it takes no advisory lock there, and an upgrade from
+v0.50 to v0.63 ran 833 migrations through the transaction door without a warning from the
+door.
+
+**A data source is a credential of your own, and so is its door.** A database you connect in
+Metabase's Admin is reached by a connection Metabase makes with the host and port you type
+there, and nothing in `.env` reaches it. Metabase's Postgres driver sends `SET SESSION
+TIMEZONE` before a query when a report timezone is set, and `SET ROLE` when impersonation is
+on, and the transaction door discards both. Point a data source that uses either at
+`pgbouncer-session:5432`, or at `postgres-18:5432` directly; one that uses neither may take
+the transaction door like anything else.
+
+**`MB_ENCRYPTION_SECRET_KEY` is a one-way door.** It encrypts the secret columns of Metabase's
+database, the data-source credentials above all; without it they sit in clear in the database
+and in every archive of it. The interview generates one before the first start, or takes
+yours, so a database userland made is encrypted from its first boot. Metabase's five cases, as
+observed on v0.63.15:
+
+| Its database | The key | What happens |
+|---|---|---|
+| unencrypted | none | starts, and logs that encryption is disabled |
+| unencrypted | a new one | starts, and encrypts the database in place on that start |
+| encrypted | the right one | starts |
+| encrypted | a wrong one | exits 1 before any migration runs |
+| encrypted | none | exits 1 before any migration runs |
+
+The last two restart forever, and behind traefik they read as a 404 rather than an error,
+because traefik routes no container whose health is still `starting`. `remove-encryption` and
+`rotate-encryption-key` both need the key you lost, so the only way back is a dump taken
+before encryption was on, and for a database userland made there is none: every dashboard and
+question is rebuilt by hand. The CLI names the line when it finishes. Copy it off the machine,
+or switch on fort, which keeps `.env` in a bucket apart from the Postgres archives; an archive
+and the key that opens it in one place are one loss, not two.
+
+**Set the Site URL at install.** Admin → Settings → General → Site URL, to the address you
+reach it on: `https://metabase.DOMAIN` in public, `http://metabase.localhost` in local,
+`http://127.0.0.1:3000` without traefik. It is a row in Metabase's database, and the template
+does not set it. Metabase builds more than its email links from it: the OAuth discovery of its
+MCP server, every endpoint that server advertises and its `WWW-Authenticate` challenge all
+derive from it, so a client registered against one address stops matching when it changes,
+and registering again is the only fix. Set it before any MCP client registers, and again after
+`set VISIBILITY`. Behind traefik, Metabase sees traefik's plain-HTTP hop, so an address it
+guesses for itself can read `http://` in public visibility.
+
+**The MCP server** is part of the application, on every edition. A client signs in over OAuth
+2.0 against a server Metabase embeds, and its token carries the permissions of the account
+that authorised it, so a connection is per person rather than a shared key. It is governed in
+Admin, not here.
+
+**Leave Metabase's own Redirect to HTTPS off.** In public visibility traefik's entrypoint
+already redirects, so the setting adds nothing, and it turns into a redirect loop if
+`X-Forwarded-Proto` ever stops arriving.
+
+**Upgrading.** The tag is exact and moves only when this repo moves it, so a `git pull` that
+moves it in `compose/metabase.yml` is an upgrade, and it runs at the next apply. Metabase runs
+the new version's migrations at start, a failure is fatal, and a downgrade is not the way
+back: `migrate down` moves one major per run, from the newer binary, and cannot undo what
+happens at start rather than in a migration, so Metabase's own advice is to restore a dump.
+Before that apply:
+
+1. Read every release note between the two versions. What bites is rarely in the migrations:
+   a major can move the sample database's engine, break the driver plugin API so a
+   third-party driver needs rebuilding, or move the bundled JVM.
+2. Take a fresh archive with `./bootstrap postgres backup now`. Last night's is not one
+   minute ago, and this one is the rollback.
+3. Rehearse on another machine: restore that archive into a throwaway Postgres, start the new
+   tag against it, and compare the counts of dashboards, questions and users, `/api/health`,
+   and the schema version in the log. The rehearsal needs the key, since an encrypted
+   database does not start without it, so that machine holds production data and the key to
+   its credentials: give it no route to your data sources, and destroy it afterwards.
+
+**Health.** The healthcheck asks `/api/health`, which answers 200 once the application has
+started and its database is reachable; `start_period` is 120 seconds, the JVM's start plus a
+first boot's migrations. `/dev/urandom` is mounted over `/dev/random`, because the JVM blocks
+on a starved entropy pool, and that shows as a start that hangs rather than one that fails.
+
+**The volume needs no backup.** Metabase downloads its own driver JARs into
+`metabase_plugins` at start. A third-party driver you put there by hand is the one thing that
+would not come back: keep your own copy, and expect to rebuild it after a major upgrade. The
+database is on Postgres, so the Postgres backup archives it with everything else.
+
+The two row limits, both connection pools and every other number run at Metabase's defaults.
 
 ## fort
 
