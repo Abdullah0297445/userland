@@ -842,7 +842,9 @@ and which every container with a Postgres database requires; `clickhouse`, the s
 ClickHouse database; `pgbouncer-transaction` and `pgbouncer-session`, the two doors the
 Contract names; `pgbouncer_auth`, the user both doors look passwords up with; and `fort`,
 whose `backup` execs into it, whose `restore` runs its image directly, and whose presence
-makes an apply end with a backup.
+makes an apply end with a backup. Two volume names are known too, `postgres_data` and
+`clickhouse_data`, so that switching a datastore off says which volume every database lives
+in.
 
 ## Notes
 

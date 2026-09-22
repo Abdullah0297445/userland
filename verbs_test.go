@@ -48,7 +48,7 @@ func TestLeftBehindNamesVolumesAndAnUnsharedDatabase(t *testing.T) {
 
 func TestLeftBehindNamesAClickHouseDatabaseAndTheStoreThatIsOff(t *testing.T) {
 	body := `{"products": {
-		"clickhouse": {"containers": {"clickhouse": {"volumes": ["clickhouse_data"]}}},
+		"clickhouse": {"containers": {"clickhouse": {"volumes": ["clickhouse_data", "clickhouse_backups"]}}},
 		"langfuse": {"containers": {
 			"langfuse-web": {"requires": ["clickhouse"], "clickhouse": {"database": "langfuse", "password": "LANGFUSE_CH_PASSWORD"}},
 			"langfuse-worker": {"requires": ["langfuse-web"], "clickhouse": {"database": "langfuse", "password": "LANGFUSE_CH_PASSWORD"}}
@@ -74,7 +74,7 @@ func TestLeftBehindNamesAClickHouseDatabaseAndTheStoreThatIsOff(t *testing.T) {
 		t.Fatalf("storeOff: %q %q", web.storeOff([]string{"clickhouse"}), web.storeOff(nil))
 	}
 	store := leftBehind(m, nil, m.Container("clickhouse"))
-	if store.String() != "volume userland_clickhouse_data (every database on ClickHouse lives in it)" {
+	if store.String() != "volume userland_clickhouse_data (every database on ClickHouse lives in it), volume userland_clickhouse_backups" {
 		t.Fatalf("clickhouse: %q", store.String())
 	}
 }
