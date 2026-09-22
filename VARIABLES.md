@@ -76,6 +76,29 @@ An asked variable is collected by the interview when its container is switched o
 
 ## postgres
 
+### pg-backup
+
+| Variable | Kind | When | Keep | Meaning |
+|---|---|---|---|---|
+| `BACKUP_PASSPHRASE` | generated | always | yes | Passphrase every archive is encrypted with |
+| `PG_BACKUP_BUCKET` | bucket | always |  | Name of the bucket. Enter to generate `userland-pg-backup-<8 hex>`, or type one you made. |
+| `PG_BACKUP_REGION` | bucket | always |  | Region of the bucket, as the provider names it; `auto` on Cloudflare R2. |
+| `PG_BACKUP_ENDPOINT` | bucket | always |  | URL the bucket is reached at. The offer writes `https://s3.<region>.amazonaws.com`. |
+| `PG_BACKUP_ACCESS_KEY_ID` | bucket | always |  | Access key that reaches this bucket and nothing else. It may list the bucket and get and put objects, and never delete. |
+| `PG_BACKUP_SECRET_ACCESS_KEY` | bucket | always |  | Its secret. |
+| `PG_BACKUP_MEM_LIMIT` | optional |  |  | Memory limit in compose's units, such as `2g`. Unbounded unless set. |
+| `BACKUP_EXCLUDE_DATABASES` | optional |  |  | Read by the template; defaults to `postgres`. |
+| `BACKUP_SCHEDULE` | optional |  |  | Read by the template; defaults to `@daily`. |
+
+### pgadmin
+
+| Variable | Kind | When | Keep | Meaning |
+|---|---|---|---|---|
+| `PGADMIN_DEFAULT_EMAIL` | email | always |  | Email address you sign in to pgadmin with |
+| `PGADMIN_DEFAULT_PASSWORD` | generated | always |  | Password you sign in to pgadmin with |
+| `PGADMIN_PORT` | optional |  |  | Loopback port to publish on while traefik is on; nothing is published unless it is set. With traefik off the container publishes on `127.0.0.1:5050` regardless. |
+| `PGADMIN_MEM_LIMIT` | optional |  |  | Memory limit in compose's units, such as `2g`. Unbounded unless set. |
+
 ### pgbouncer-session
 
 | Variable | Kind | When | Keep | Meaning |

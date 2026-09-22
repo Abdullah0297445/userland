@@ -53,3 +53,58 @@ healthcheck:
   timeout: 5s
   retries: 5
 {{ end }}
+
+{{ define "pgadmin" -}}
+image: dpage/pgadmin4:latest
+environment:
+  <<: *userland-environment
+  PGADMIN_DEFAULT_EMAIL: ${PGADMIN_DEFAULT_EMAIL}
+  PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_DEFAULT_PASSWORD}
+  PGADMIN_LISTEN_PORT: 5050
+  PGADMIN_DISABLE_POSTFIX: 1
+  GUNICORN_ACCESS_LOGFILE: /dev/null
+{{- if .On "traefik" }}
+  PGADMIN_CONFIG_PROXY_X_FOR_COUNT: 1
+  PGADMIN_CONFIG_PROXY_X_PROTO_COUNT: 1
+  PGADMIN_CONFIG_PROXY_X_HOST_COUNT: 1
+  PGADMIN_CONFIG_PROXY_X_PORT_COUNT: 1
+  PGADMIN_CONFIG_PROXY_X_PREFIX_COUNT: 0
+{{- end }}
+{{- if eq .Visibility "public" }}
+  PGADMIN_CONFIG_SESSION_COOKIE_SECURE: "True"
+{{- end }}
+volumes:
+  - pgadmin_data:/var/lib/pgadmin
+  - ./config/pgadmin-servers.json:/pgadmin4/servers.json:ro
+healthcheck:
+  test: ["CMD", "wget", "--quiet", "--output-document=-", "http://localhost:5050/misc/ping"]
+  interval: 30s
+  timeout: 10s
+  retries: 5
+  start_period: 60s
+{{ end }}
+
+{{ define "pg-backup" -}}
+image: siemens/postgres-backup-s3:18
+environment:
+  <<: *userland-environment
+  SCHEDULE: ${BACKUP_SCHEDULE:-@daily}
+  POSTGRES_HOST: postgres-18
+  POSTGRES_PORT: 5432
+  POSTGRES_USER: postgres
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+  BACKUP_EXCLUDE_DATABASES: ${BACKUP_EXCLUDE_DATABASES:-postgres}
+  PASSPHRASE: ${BACKUP_PASSPHRASE}
+  S3_BUCKET: ${PG_BACKUP_BUCKET}
+  S3_REGION: ${PG_BACKUP_REGION}
+  S3_ENDPOINT: ${PG_BACKUP_ENDPOINT}
+  S3_ACCESS_KEY_ID: ${PG_BACKUP_ACCESS_KEY_ID}
+  S3_SECRET_ACCESS_KEY: ${PG_BACKUP_SECRET_ACCESS_KEY}
+volumes:
+  - ./scripts/backup.sh:/backup.sh:ro
+healthcheck:
+  test: ["CMD-SHELL", "pgrep -f go-cron > /dev/null"]
+  interval: 60s
+  timeout: 5s
+  retries: 3
+{{ end }}

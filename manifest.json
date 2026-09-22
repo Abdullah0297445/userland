@@ -41,6 +41,25 @@
         },
         "pgbouncer-session": {
           "requires": ["postgres-18"]
+        },
+        "pgadmin": {
+          "requires": ["postgres-18"],
+          "optional": ["traefik"],
+          "http": {"container": 5050, "host": 5050},
+          "volumes": ["pgadmin_data"],
+          "asks": [
+            {"var": "PGADMIN_DEFAULT_EMAIL", "type": "email", "prompt": "Email address you sign in to pgadmin with"},
+            {"var": "PGADMIN_DEFAULT_PASSWORD", "type": "generated", "prompt": "Password you sign in to pgadmin with"}
+          ]
+        },
+        "pg-backup": {
+          "requires": ["postgres-18"],
+          "external": {
+            "PG_BACKUP": {"kind": "bucket"}
+          },
+          "asks": [
+            {"var": "BACKUP_PASSPHRASE", "type": "generated", "prompt": "Passphrase every archive is encrypted with", "keep": true}
+          ]
         }
       }
     },
