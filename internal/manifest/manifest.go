@@ -28,6 +28,7 @@ type Container struct {
 	ClickHouse *Database            `json:"clickhouse"`
 	Ports      []int                `json:"ports"`
 	Volumes    []string             `json:"volumes"`
+	Files      string               `json:"files"`
 	Asks       []Ask                `json:"asks"`
 	External   map[string]*External `json:"external"`
 	Renamed    map[string]string    `json:"renamed"`
@@ -164,6 +165,9 @@ func Parse(raw []byte) (*Manifest, error) {
 				if c.Postgres != nil && c.Postgres.Password == c.ClickHouse.Password {
 					return nil, fmt.Errorf("manifest.json: %s names %s as both its Postgres and its ClickHouse password", name, c.Postgres.Password)
 				}
+			}
+			if c.Files != "" && !ValidVariable(c.Files) {
+				return nil, fmt.Errorf("manifest.json: %s keeps the paths named by %q, which is not a variable name", name, c.Files)
 			}
 			if err := c.checkAsks(); err != nil {
 				return nil, err

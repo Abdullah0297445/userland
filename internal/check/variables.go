@@ -89,8 +89,11 @@ func Variables(m *manifest.Manifest, bodies []body) string {
 		sort.Strings(names)
 		for _, name := range names {
 			meaning := "Read by the template; empty unless set."
-			if d := defaults[c.Name][name]; d != "" {
-				meaning = fmt.Sprintf("Read by the template; defaults to `%s`.", d)
+			switch {
+			case name == c.Files:
+				meaning = fmt.Sprintf("Absolute paths this container keeps, separated by colons, each one's directory mounted read-only under `%s`. Written by the CLI: `./bootstrap %s add PATH` and `remove PATH` change it.", render.FilesRoot, c.Product)
+			case defaults[c.Name][name] != "":
+				meaning = fmt.Sprintf("Read by the template; defaults to `%s`.", defaults[c.Name][name])
 			}
 			optional = append(optional, row{name, "optional", "", "", meaning})
 		}
@@ -113,8 +116,11 @@ func externalMeaning(prefix string, x manifest.External, a manifest.Ask) string 
 	case manifest.AccessKeyID:
 		if x.Kind == manifest.Bucket {
 			rights := "list the bucket and get and put objects, and never delete"
-			if x.Delete {
+			switch {
+			case x.DeletesAnywhere():
 				rights = "list the bucket and get, put and delete objects"
+			case x.CanDelete():
+				rights = fmt.Sprintf("list the bucket and get and put objects, and delete under `%s/` and nowhere else", x.DeleteUnder())
 			}
 			return fmt.Sprintf("Access key that reaches this bucket and nothing else. It may %s.", rights)
 		}

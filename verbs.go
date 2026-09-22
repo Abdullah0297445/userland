@@ -11,6 +11,7 @@ import (
 
 	"github.com/Abdullah0297445/userland/internal/contract"
 	"github.com/Abdullah0297445/userland/internal/env"
+	"github.com/Abdullah0297445/userland/internal/fort"
 	"github.com/Abdullah0297445/userland/internal/interview"
 	"github.com/Abdullah0297445/userland/internal/manifest"
 	"github.com/Abdullah0297445/userland/internal/provision"
@@ -437,10 +438,15 @@ func renderFile(m *manifest.Manifest, e *env.File, root string) error {
 }
 
 func apply(m *manifest.Manifest, e *env.File, root string, asked []string) error {
+	on := e.List(interview.On)
+	if contains(on, fort.Container) {
+		if err := seedFort(e, root); err != nil {
+			return err
+		}
+	}
 	if err := renderFile(m, e, root); err != nil {
 		return err
 	}
-	on := e.List(interview.On)
 	if stores := intersect([]string{manifest.Postgres, manifest.ClickHouse}, on); len(stores) > 0 {
 		if err := compose(root, append([]string{"up", "-d", "--wait", "--remove-orphans"}, stores...)...); err != nil {
 			return err
@@ -449,13 +455,16 @@ func apply(m *manifest.Manifest, e *env.File, root string, asked []string) error
 			return err
 		}
 	}
-	if err := compose(root, "up", "-d", "--remove-orphans"); err != nil {
+	if err := compose(root, "up", "-d", "--remove-orphans", "--build"); err != nil {
 		return err
 	}
 	if err := compose(root, "ps", "--format", "table {{.Name}}\t{{.Status}}\t{{.Ports}}"); err != nil {
 		return err
 	}
 	closing(m, e, on, asked)
+	if contains(on, fort.Container) {
+		return backUp(e, root)
+	}
 	return nil
 }
 

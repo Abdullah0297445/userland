@@ -19,6 +19,7 @@ const (
 	Resolver  = "letsencrypt"
 	Web       = "web"
 	Secure    = "websecure"
+	FilesRoot = "/files"
 )
 
 var Owned = []string{"container_name", "restart", "depends_on", "networks", "labels", "ports", "mem_limit"}
@@ -42,6 +43,7 @@ type data struct {
 	Postgres   *manifest.Database
 	ClickHouse *manifest.Database
 	HTTP       *manifest.HTTP
+	Mounts     []string
 	on         map[string]bool
 }
 
@@ -73,12 +75,12 @@ func (t *Templates) Has(name string) bool {
 	return t.set.Lookup(name) != nil
 }
 
-func (t *Templates) Body(c *manifest.Container, visibility string, on map[string]bool) (string, error) {
+func (t *Templates) Body(c *manifest.Container, visibility string, on map[string]bool, mounts []string) (string, error) {
 	if !t.Has(c.Name) {
 		return "", fmt.Errorf("compose/%s.yml defines no template %q", c.Product, c.Name)
 	}
 	var body bytes.Buffer
-	if err := t.set.ExecuteTemplate(&body, c.Name, data{c.Name, c.Product, visibility, c.Postgres, c.ClickHouse, c.HTTP, on}); err != nil {
+	if err := t.set.ExecuteTemplate(&body, c.Name, data{c.Name, c.Product, visibility, c.Postgres, c.ClickHouse, c.HTTP, mounts, on}); err != nil {
 		return "", err
 	}
 	var lines []string
@@ -104,7 +106,7 @@ func Render(in Input) ([]byte, error) {
 		if !on[c.Name] {
 			continue
 		}
-		body, err := templates.Body(c, in.Visibility, on)
+		body, err := templates.Body(c, in.Visibility, on, Mounts(in.Env.Get(c.Files)))
 		if err != nil {
 			return nil, err
 		}
@@ -187,6 +189,24 @@ func Render(in Input) ([]byte, error) {
 		}
 	}
 	return []byte(b.String()), nil
+}
+
+func Mounts(spec string) []string {
+	seen := map[string]bool{}
+	var mounts []string
+	for _, path := range strings.Split(spec, ":") {
+		if path = strings.TrimSpace(path); !strings.HasPrefix(path, "/") {
+			continue
+		}
+		dir := filepath.Dir(path)
+		if seen[dir] {
+			continue
+		}
+		seen[dir] = true
+		mounts = append(mounts, dir+":"+FilesRoot+dir+":ro")
+	}
+	sort.Strings(mounts)
+	return mounts
 }
 
 func Set(names []string) map[string]bool {

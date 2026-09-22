@@ -23,7 +23,7 @@ runs *for you*. This repo is that layer, for one host.
 | **The proxy** | traefik, terminating TLS for everything else. |
 | **The datastores** | One Postgres and one ClickHouse, shared: one of each for the whole host, never one per application. Redis is the exception: a product that needs it runs its own, inside the product, and nothing else is pointed at it. |
 | **The applications** | n8n, Metabase, Langfuse, Twenty, neo4j. |
-| **fort** | Keeps the files you name, `.env` first, encrypted in a bucket of their own under a master key that never touches the host. |
+| **fort** | Keeps the files you name, `.env` first, in a bucket of their own as [restic](https://restic.net) snapshots, under a master key that never touches the host. |
 
 Two things are pointed at rather than run: an S3-compatible object store you bring, which
 the Postgres backup, Langfuse and fort each need a bucket of, and a secret store you own,
@@ -33,10 +33,11 @@ The interview offers to make each of those for you on AWS, with admin credential
 once and never writes, and it adopts what already exists in your account rather than making
 a second one. Decline, and it prints a checklist with your names filled in, for any
 S3-compatible provider. Each bucket is reached by an access key of its own. The Postgres
-dumps' and fort's may write and never delete, so a compromised host cannot erase its own
-archives; Langfuse's may delete, because its Data Retention feature does. Retention is
-yours: nothing in userland deletes from the dumps' bucket or fort's, so set a rule at your
-provider, or accept that they grow.
+dumps' may write and never delete, so a compromised host cannot erase its own archives;
+fort's may delete under `locks/` and nowhere else; Langfuse's may delete, because its Data
+Retention feature does. Retention is yours where it is yours: set a rule at your provider for
+the dumps' bucket, or accept that it grows. Nothing may ever expire in fort's, and *Object
+store* says why.
 
 Each application gets its own database on the shared Postgres, owned by a user of the same
 name. The backup discovers databases by reading the server rather than by being handed a
@@ -112,10 +113,14 @@ first and defaults to no.
    reference, and there are no profiles.
 3. If Postgres or ClickHouse is on, brings them up first and waits for them to be healthy,
    then provisions.
-4. Brings up everything else with `--remove-orphans`. A container absent from the file is
-   an orphan, so switching it off is enough to remove it; its volume and its database stay.
+4. Brings up everything else with `--remove-orphans` and `--build`. A container absent from
+   the file is an orphan, so switching it off is enough to remove it; its volume and its
+   database stay. `--build` is for fort, the one image this repo builds.
 5. Prints the URL of everything that answers HTTP and the `.env` lines you must copy off
    the machine because they cannot be regenerated.
+6. If fort is on, backs up. Every apply ends with a backup, so a host is kept from the day
+   fort is switched on, and a listed file that has gone missing fails the apply rather than
+   being noticed a month later.
 
 Switching traefik on or off recreates every HTTP container, because their labels and
 published ports change. That is expected and loses nothing.
@@ -232,50 +237,66 @@ configurable. Outside the offer nothing in the interview reaches the network.
 
 **The keys, and what each may do.** Every key reaches its one bucket and nothing else. It lists
 the bucket, gets and puts objects, and aborts a multipart upload, since a killed upload leaves
-parts behind and abort can never remove a finished object. A `versioned` bucket's key may also
-read whether versioning is on. A `delete` bucket's key may delete objects; langfuse's is the one,
-because its Data Retention feature deletes. Every other key can never delete, so a compromised
-host cannot erase its own archives. This is the document the offer writes, for a bucket with
-neither property; `versioned` adds `s3:GetBucketVersioning` to the first statement and `delete`
-adds `s3:DeleteObject` to the second:
+parts behind and abort can never remove a finished object. `delete` says what else it may remove.
+Left out, nothing, and that is the default, so a compromised host cannot erase its own archives.
+`"*"` means any object in the bucket; langfuse's is the one, because its Data Retention feature
+deletes. A prefix such as `"locks/*"` means objects under that prefix and nowhere else; fort's is
+the one, so a backup can clear the lock file it just wrote and cannot touch the archive. Nothing
+in userland reads whether versioning is on, so no key may. This is the document the offer writes
+for a bucket with no `delete`; `"*"` adds `s3:DeleteObject` to the second statement, and a prefix
+adds a third:
 
 ```json
 {
   "Version": "2012-10-17",
   "Statement": [
     {"Effect": "Allow", "Action": ["s3:ListBucket"], "Resource": "arn:aws:s3:::BUCKET"},
-    {"Effect": "Allow", "Action": ["s3:GetObject", "s3:PutObject", "s3:AbortMultipartUpload"], "Resource": "arn:aws:s3:::BUCKET/*"}
+    {"Effect": "Allow", "Action": ["s3:GetObject", "s3:PutObject", "s3:AbortMultipartUpload"], "Resource": "arn:aws:s3:::BUCKET/*"},
+    {"Effect": "Allow", "Action": ["s3:DeleteObject"], "Resource": "arn:aws:s3:::BUCKET/locks/*"}
   ]
 }
 ```
 
-**Retention is yours.** Nothing in userland deletes from a bucket whose key cannot, and the CLI
-never writes a lifecycle rule: a rule on a whole bucket would expire the base a later ClickHouse
-backup depends on, so any rule is prefix-scoped and set by you at your provider. The first time
-a bucket's container is switched on, the CLI says so; without a rule the bucket grows.
+**Retention is yours, except where nothing may expire.** Nothing in userland deletes from a
+bucket whose key cannot, and the CLI never writes a lifecycle rule: a rule on a whole bucket
+would expire the base a later ClickHouse backup depends on, so any rule is prefix-scoped and set
+by you at your provider. The first time a bucket's container is switched on, the CLI says so;
+without a rule the bucket grows. A bucket the manifest marks `"never_expire": true` is the
+exception, and it is not a preference. What it holds is one archive whose parts point at each
+other, so an object removed by age takes with it every later part that pointed at it. There the
+CLI tells you to set no rule at all, and S3 performs an expiration itself, so no bucket policy
+can stop one you set by mistake. fort's bucket is the one.
 
 **By hand, at any provider.** The checklist the interview prints is the short form of this.
 
 - **AWS.** Bucket, then user, then the inline policy above, then an access key. New buckets
   block public access, disable ACLs and encrypt at rest by default, so nothing else is set.
-  Retention is a lifecycle rule: an expiration on the dumps, a noncurrent-version expiration
-  on fort's bucket, and, once ClickHouse's archive shares the dumps' bucket, scoped to the
-  dumps' prefix, because an expired base breaks every increment after it. AWS also
-  recommends a rule that aborts incomplete multipart uploads after a few days; that one is
-  yours too.
+  Retention is a lifecycle rule: an expiration on the dumps and, once ClickHouse's archive
+  shares the dumps' bucket, scoped to the dumps' prefix, because an expired base breaks every
+  increment after it. **No rule of any kind on fort's bucket**, not even a
+  noncurrent-version expiration: the only versions that ever appear there are the ones
+  something else left, which are both the evidence and the way back. AWS also recommends a
+  rule that aborts incomplete multipart uploads after a few days; that one is yours too,
+  and it never fires for fort, whose objects are far below one part.
 - **Backblaze B2.** An application key restricted to the one bucket with `listFiles`,
   `readFiles` and `writeFiles`, adding `deleteFiles` only for a `delete` bucket. `writeFiles`
-  without `deleteFiles` is the no-delete key, and an upload to an existing name makes a new
-  version, so fort's fixed keys work. Every B2 bucket keeps versions, so fort's check passes.
-  Retention is B2's lifecycle rules; through the S3 API an expiration rule is paired with a
-  delete-marker rule. Endpoint `https://s3.<region>.backblazeb2.com`, region as in the
-  endpoint. **This is the provider to pick without an AWS account.**
+  without `deleteFiles` is the no-delete key. A B2 key carries one capability list for the
+  whole key, so **`delete` cannot be scoped to a prefix here**: fort's key either deletes
+  everywhere or nowhere, and *fort* says what each costs. Every B2 bucket keeps versions, so
+  the overwrite guard is there by default — keep it that way and ignore restic's own advice
+  to add a "keep only the last version" rule, which is for repositories that prune and would
+  throw the guard away. Retention is B2's lifecycle rules; through the S3 API an expiration
+  rule is paired with a delete-marker rule, and neither belongs on fort's bucket. Endpoint
+  `https://s3.<region>.backblazeb2.com`, region as in the endpoint. **This is the provider to
+  pick without an AWS account.**
 - **Cloudflare R2.** A token of *Object Read & Write* scoped to the bucket. There is no level
   that writes without deleting, so on R2 the dumps' key and fort's can delete, and a
-  compromised host could erase its own archives there. R2 has no versioning, so fort needs
-  `FORT_ALLOW_UNVERSIONED=true` and history is one deep. Lifecycle rules exist and are
-  prefix-scoped. Endpoint `https://<account id>.r2.cloudflarestorage.com`, region `auto`.
-  Virtual-hosted requests are accepted, so no path-style setting is needed.
+  compromised host could erase its own archives there. R2 has no versioning either, so fort's
+  overwrite guard is absent as well; fort's own history is unaffected, because it never lived
+  in versions. Both of those are R2's floor, not a setting: R2 is the weakest of the three for
+  fort. Lifecycle rules exist and are prefix-scoped, and none belongs on fort's bucket.
+  Endpoint `https://<account id>.r2.cloudflarestorage.com`, region `auto`. Virtual-hosted
+  requests are accepted, so no path-style setting is needed.
 
 ## Secret store
 
@@ -407,6 +428,72 @@ n8n never sees it and always listens on 5678 inside its container.
 n8n runs in n8n's regular mode: no queue, no worker, no Redis. Pruning, the pool and every
 other number run at n8n's defaults.
 
+## fort
+
+fort keeps the files you name off this host, so that losing the host is not losing your
+secrets. It is one container, it requires nothing, and it is the only thing here that backs
+up something outside userland.
+
+`FORT_FILES` is the list: absolute paths, separated by colons. Switching fort on puts this
+clone's `.env` at the head of it, because that one file holds every secret of every container
+you switched on. `./bootstrap fort add PATH…` adds more and refuses a path that is not on this
+host; `remove PATH…` stops keeping one, and refuses this clone's `.env` while fort is on. Each
+listed path has its **directory** mounted read-only at the same place under `/files`, so fort
+can read the file and can write nothing.
+
+**What is in the bucket.** restic snapshots, and nothing you can read without the master key.
+Each object is named after the hash of its own contents, so nothing is ever overwritten and
+nothing is ever a file path; every backup adds a snapshot, and the list of snapshots is the
+history. There is no `.gpg` next to a familiar name to grab, and equally no way to get a file
+back except through restic with the key.
+
+**The master key is the repository password**, read out of your secret store at the start of
+every run by `scripts/fort-key`, held in memory, and written nowhere — not in `.env`, not on
+disk, not in the bucket, which holds it only as ciphertext that the password unlocks. So
+**replacing the parameter's value does not re-key anything; it locks fort out of its own
+archive.** That is why the offer adopts a parameter that exists and never overwrites it.
+
+**Retention: never prune, nothing expires.** fort only ever adds. A run where nothing changed
+adds one snapshot of about 400 bytes, so the archive grows by bytes a day and a year of daily
+backups is about 150 KB. `forget` and `prune`, which are how restic reclaims space, need
+delete rights the key does not have, and so do `unlock --remove-all`, `rewrite` and `tag`: if
+you ever want them, restic's own guidance is a separate, well-secured machine with a
+delete-capable key, never this host. And **set no lifecycle rule on this bucket**: see *Object
+store*.
+
+**Versioning guards against overwrite, not loss.** fort's key can put an object but not delete
+one — and a put overwrites. A host that has been broken into can therefore write garbage over
+any object under its own name, using fort's key, and restic sends nothing that would stop it.
+With versioning on, the original is still there as an older version and you put it back by hand
+with an identity of your own. Because restic never overwrites anything, **an older version in
+this bucket means something other than restic wrote there.** `restic check` will tell you the
+archive is damaged, because an object's contents no longer match its name, but it cannot repair
+what it does not have.
+
+**The image is this repo's own**, the only one it builds, so `apply` passes `--build`. It is
+`restic/restic:0.19.1` plus `ssmget`, a small Go program built in a stage of its own that reads
+the one parameter through Amazon's own library. The pin matters: a listed file that has gone
+missing exits 3 only since restic 0.19.0, and before that it was a silent success. Process 1 is
+busybox `crond`, which the image already carries, reading `FORT_SCHEDULE` (`@daily` unless you
+set it). crond hands a job almost no environment, so the entrypoint saves its own with
+`export -p` into `/run/fort.env`, mode 600, and the scheduled line sources it.
+
+**A missing file fails the run and still makes a snapshot.** restic backs up what it can find,
+warns, and exits 3; fort reports that as a failure, and an apply that ends in one fails. But the
+partial snapshot is real and it is now the latest, so the file that was missing is not in it. A
+restore lists every path it is about to write before it writes anything, which is where you see
+the gap; an earlier snapshot still holds the file, and getting it from there is restic on another
+machine.
+
+**Restore needs nothing but the bucket and the key.** `./bootstrap fort restore` works in a clone
+with no `.env` at all — which is the case a restore is for. It asks where the bucket and the
+master key are, builds the image, then runs it twice with no host mount: once to list the latest
+snapshot, so you see every path with the time that file was last changed, and once to stream a tar
+which the CLI unpacks onto `/`. Every file lands back at its own absolute path with its own mode
+and time, so `.env` comes back at 600. It assumes the host is laid out as the old one was; run it
+as a user that may write those paths. Then `./bootstrap` brings the stack up against what came
+back, and provisioning converges each database user to the password the restored `.env` holds.
+
 ## For a consumer
 
 A **consumer** is a project of your own that uses userland and is not part of it. The
@@ -473,7 +560,9 @@ property its kind has no use for.
 | `manifest.json` | What every container depends on and what it needs asked. The CLI trusts nothing else. |
 | `VARIABLES.md` | Every variable `.env` may hold, by container. Generated; `check` fails when it is stale. |
 | `compose/` | One template per product. The CLI renders `compose.yml` from them; nothing is ever run from inside it. |
-| `scripts/` | Shell that runs inside a container — the backups' schedules, the dump, fort's run. Nothing here runs on the host. |
+| `scripts/` | Shell that runs inside a container — the backups' schedules, the dump, fort's entrypoint and its password command. Nothing here runs on the host. |
+| `Dockerfile` | fort's image, the only one this repo builds: restic plus a reader for the secret store. |
+| `ssmget/` | That reader, a Go module of its own so the CLI never takes a cloud SDK as a dependency. |
 | `initdb/` | First-start initialisation for a datastore. Runs once, against an empty volume, and never again. Empty today: what used to live here is provisioned instead. |
 | `config/` | Configuration files a container mounts, checked in because they hold nothing secret. |
 | `consumer/` | Files you copy into a project of your own. userland never runs them. |
@@ -502,7 +591,8 @@ is missing as you fill them in.
 | `ports` | Ports published on every interface. traefik alone. |
 | `volumes` | Named volumes this container mounts. The top-level `volumes` block, "left behind" and `reclaim` all read this. |
 | `asks` | `var`, `type`, `prompt`, optional `when` (`public`, `local` or `VAR=value`) and `keep`. Types: `text hostname email url port secret generated choice paths`, described under *The interview*. |
-| `external` | `{"PREFIX": {"kind": "bucket"}}`, with `"delete": true` or `"versioned": true` where the container needs it, or `{"kind": "secret-store"}`. The kind supplies five variables under the prefix, and the interview asks them with the offer and the checklist, under *Object store* and *Secret store*. Two containers naming one prefix share it and must describe it alike. |
+| `external` | `{"PREFIX": {"kind": "bucket"}}`, or `{"kind": "secret-store"}`. A bucket takes `"versioned": true`, `"never_expire": true`, and `"delete"` as `"*"` for any object or a prefix like `"locks/*"` for objects under it; left out, the key may never delete. The kind supplies five variables under the prefix, and the interview asks them with the offer and the checklist, under *Object store* and *Secret store*. Two containers naming one prefix share it and must describe it alike. |
+| `files` | The variable holding absolute paths this container keeps, separated by colons. Each path's directory is mounted read-only at the same place under `/files`. fort is the one, under *fort*. |
 | `renamed` | `{"OLD_NAME": "NEW_NAME"}`. The next run moves the `.env` value under its new name and drops the old line. |
 | `removed` | Variables this container no longer reads. The next run drops their lines. |
 
@@ -528,11 +618,12 @@ is missing as you fill them in.
 
 ### Names the CLI knows
 
-Six names are kinds the CLI defines rather than manifest data: `traefik`, whose
+Seven names are kinds the CLI defines rather than manifest data: `traefik`, whose
 presence decides labels and loopback ports; `postgres-18`, which provisioning execs into
 and which every container with a Postgres database requires; `clickhouse`, the same for a
 ClickHouse database; `pgbouncer-transaction` and `pgbouncer-session`, the two doors the
-Contract names; and `pgbouncer_auth`, the user both doors look passwords up with.
+Contract names; `pgbouncer_auth`, the user both doors look passwords up with; and `fort`,
+whose verbs run its image directly and whose presence makes an apply end with a backup.
 
 ## Notes
 

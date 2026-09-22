@@ -39,7 +39,7 @@ func TestProductOrderOnTheRealManifest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"clickhouse", "metabase", "n8n", "postgres", "traefik"}
+	want := []string{"clickhouse", "fort", "metabase", "n8n", "postgres", "traefik"}
 	if got := m.ProductOrder(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("order %v, want %v", got, want)
 	}
@@ -175,10 +175,10 @@ func TestDatabaseAndSharesDatabase(t *testing.T) {
 
 func TestExternalKindsLoadAndSupplyTheirVariables(t *testing.T) {
 	m, err := load(t, `{"products": {
-		"fort": {"containers": {"fort": {"external": {"FORT_S3": {"kind": "bucket", "versioned": true}, "FORT_KEY": {"kind": "secret-store"}}}}},
+		"fort": {"containers": {"fort": {"external": {"FORT_S3": {"kind": "bucket", "versioned": true, "delete": "locks/*", "never_expire": true}, "FORT_KEY": {"kind": "secret-store"}}}}},
 		"langfuse": {"containers": {
-			"langfuse-web": {"external": {"LANGFUSE_S3": {"kind": "bucket", "delete": true}}},
-			"langfuse-worker": {"requires": ["langfuse-web"], "external": {"LANGFUSE_S3": {"kind": "bucket", "delete": true}}}
+			"langfuse-web": {"external": {"LANGFUSE_S3": {"kind": "bucket", "delete": "*"}}},
+			"langfuse-worker": {"requires": ["langfuse-web"], "external": {"LANGFUSE_S3": {"kind": "bucket", "delete": "*"}}}
 		}}
 	}}`)
 	if err != nil {
@@ -202,11 +202,16 @@ func TestExternalKindsLoadAndSupplyTheirVariables(t *testing.T) {
 	if c, a, ok := m.AskFor("FORT_S3_BUCKET"); !ok || c.Name != "fort" || a.Type != BucketName {
 		t.Fatal("a kind's variable is found like an ask")
 	}
-	if c, x, ok := m.External("LANGFUSE_S3"); !ok || c.Name != "langfuse-web" || !x.Delete || x.Describe() != "bucket, delete" {
+	if c, x, ok := m.External("LANGFUSE_S3"); !ok || c.Name != "langfuse-web" || !x.DeletesAnywhere() || x.Describe() != "bucket, delete" {
 		t.Fatalf("External lookup: %v %v %v", c, x, ok)
 	}
 	if (External{Kind: Bucket, Versioned: true}).Describe() != "bucket, versioned" || (External{Kind: SecretStore}).Describe() != "secret-store" {
 		t.Fatal("Describe")
+	}
+	locks, _, _ := m.External("FORT_S3")
+	x := *locks.External["FORT_S3"]
+	if !x.CanDelete() || x.DeletesAnywhere() || x.DeleteUnder() != "locks" || x.Describe() != "bucket, versioned, delete under locks/, never expire" {
+		t.Fatalf("a prefix-scoped delete: %q", x.Describe())
 	}
 	if Dependency("FORT_S3") != "fort-s3" || Dependency("X") != "x" {
 		t.Fatal("Dependency")
@@ -215,20 +220,23 @@ func TestExternalKindsLoadAndSupplyTheirVariables(t *testing.T) {
 
 func TestLoadRefusesBadExternals(t *testing.T) {
 	cases := map[string]string{
-		"unknown kind":             `{"products": {"p": {"containers": {"c": {"external": {"X": {"kind": "vault"}}}}}}}`,
-		"no kind":                  `{"products": {"p": {"containers": {"c": {"external": {"X": {}}}}}}}`,
-		"secret store versioned":   `{"products": {"p": {"containers": {"c": {"external": {"X": {"kind": "secret-store", "versioned": true}}}}}}}`,
-		"secret store delete":      `{"products": {"p": {"containers": {"c": {"external": {"X": {"kind": "secret-store", "delete": true}}}}}}}`,
-		"lowercase prefix":         `{"products": {"p": {"containers": {"c": {"external": {"x_s3": {"kind": "bucket"}}}}}}}`,
-		"shared but different":     `{"products": {"p": {"containers": {"a": {"external": {"X": {"kind": "bucket"}}}, "b": {"external": {"X": {"kind": "bucket", "delete": true}}}}}}}`,
-		"ask collides with a kind": `{"products": {"p": {"containers": {"c": {"asks": [{"var": "X_BUCKET", "type": "text"}], "external": {"X": {"kind": "bucket"}}}}}}}`,
+		"unknown kind":              `{"products": {"p": {"containers": {"c": {"external": {"X": {"kind": "vault"}}}}}}}`,
+		"no kind":                   `{"products": {"p": {"containers": {"c": {"external": {"X": {}}}}}}}`,
+		"secret store versioned":    `{"products": {"p": {"containers": {"c": {"external": {"X": {"kind": "secret-store", "versioned": true}}}}}}}`,
+		"secret store delete":       `{"products": {"p": {"containers": {"c": {"external": {"X": {"kind": "secret-store", "delete": "*"}}}}}}}`,
+		"secret store never expire": `{"products": {"p": {"containers": {"c": {"external": {"X": {"kind": "secret-store", "never_expire": true}}}}}}}`,
+		"delete on no prefix":       `{"products": {"p": {"containers": {"c": {"external": {"X": {"kind": "bucket", "delete": "locks"}}}}}}}`,
+		"delete on a bare glob":     `{"products": {"p": {"containers": {"c": {"external": {"X": {"kind": "bucket", "delete": "/*"}}}}}}}`,
+		"lowercase prefix":          `{"products": {"p": {"containers": {"c": {"external": {"x_s3": {"kind": "bucket"}}}}}}}`,
+		"shared but different":      `{"products": {"p": {"containers": {"a": {"external": {"X": {"kind": "bucket"}}}, "b": {"external": {"X": {"kind": "bucket", "delete": "*"}}}}}}}`,
+		"ask collides with a kind":  `{"products": {"p": {"containers": {"c": {"asks": [{"var": "X_BUCKET", "type": "text"}], "external": {"X": {"kind": "bucket"}}}}}}}`,
 	}
 	for name, body := range cases {
 		if _, err := load(t, body); err == nil || !strings.HasPrefix(err.Error(), "manifest.json: ") {
 			t.Errorf("%s: want a manifest.json refusal, got %v", name, err)
 		}
 	}
-	if _, err := load(t, `{"products": {"p": {"containers": {"a": {"external": {"X": {"kind": "bucket", "delete": true}}}, "b": {"external": {"X": {"kind": "bucket", "delete": true}}}}}}}`); err != nil {
+	if _, err := load(t, `{"products": {"p": {"containers": {"a": {"external": {"X": {"kind": "bucket", "delete": "*"}}}, "b": {"external": {"X": {"kind": "bucket", "delete": "*"}}}}}}}`); err != nil {
 		t.Fatalf("two containers may share one external when they agree: %v", err)
 	}
 }
