@@ -63,7 +63,7 @@ func Load(root string) (*Templates, error) {
 func (t *Templates) Names() []string {
 	var names []string
 	for _, tmpl := range t.set.Templates() {
-		if name := tmpl.Name(); name != "" && !strings.HasSuffix(name, ".yml") {
+		if name := tmpl.Name(); name != "" && !strings.Contains(name, ".") {
 			names = append(names, name)
 		}
 	}

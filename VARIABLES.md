@@ -41,6 +41,48 @@ An asked variable is collected by the interview when its container is switched o
 | `FORT_FILES` | optional |  |  | Absolute paths this container keeps, separated by colons, each one's directory mounted read-only under `/files`. Written by the CLI: `./bootstrap fort add PATH` and `remove PATH` change it. |
 | `FORT_SCHEDULE` | optional |  |  | Read by the template; defaults to `@daily`. |
 
+## langfuse
+
+### langfuse-redis
+
+| Variable | Kind | When | Keep | Meaning |
+|---|---|---|---|---|
+| `LANGFUSE_REDIS_PASSWORD` | generated | always |  | Password of langfuse's own Redis |
+| `LANGFUSE_REDIS_MEM_LIMIT` | optional |  |  | Memory limit in compose's units, such as `2g`. Unbounded unless set. |
+
+### langfuse-web
+
+| Variable | Kind | When | Keep | Meaning |
+|---|---|---|---|---|
+| `LANGFUSE_ENCRYPTION_KEY` | hex | always | yes | Key langfuse encrypts saved LLM and integration credentials with |
+| `LANGFUSE_SALT` | generated | always |  | Salt langfuse hashes API keys with |
+| `LANGFUSE_NEXTAUTH_SECRET` | generated | always |  | Secret langfuse signs sign-in sessions with |
+| `LANGFUSE_INIT_USER_EMAIL` | email | public |  | Email address of the first langfuse account |
+| `LANGFUSE_INIT_USER_PASSWORD` | generated | public |  | Password of the first langfuse account |
+| `LANGFUSE_DB_PASSWORD` | generated | always |  | Password of the `langfuse` user on Postgres, which owns the `langfuse` database. Provisioning converges it to whatever this holds. |
+| `LANGFUSE_CLICKHOUSE_PASSWORD` | generated | always |  | Password of the `langfuse` user on ClickHouse, which reaches the `langfuse` database and nothing else. Provisioning converges it to whatever this holds. |
+| `LANGFUSE_S3_BUCKET` | bucket, delete | always |  | Name of the bucket. Enter to generate `userland-langfuse-s3-<8 hex>`, or type one you made. |
+| `LANGFUSE_S3_REGION` | bucket, delete | always |  | Region of the bucket, as the provider names it; `auto` on Cloudflare R2. |
+| `LANGFUSE_S3_ENDPOINT` | bucket, delete | always |  | URL the bucket is reached at. The offer writes `https://s3.<region>.amazonaws.com`. |
+| `LANGFUSE_S3_ACCESS_KEY_ID` | bucket, delete | always |  | Access key that reaches this bucket and nothing else. It may list the bucket and get, put and delete objects. |
+| `LANGFUSE_S3_SECRET_ACCESS_KEY` | bucket, delete | always |  | Its secret. |
+| `LANGFUSE_WEB_PORT` | optional |  |  | Loopback port to publish on while traefik is on; nothing is published unless it is set. With traefik off the container publishes on `127.0.0.1:3001` regardless. |
+| `LANGFUSE_WEB_MEM_LIMIT` | optional |  |  | Memory limit in compose's units, such as `2g`. Unbounded unless set. |
+| `LANGFUSE_AUTH_DISABLE_SIGNUP` | optional |  |  | Read by the template; defaults to `true`. |
+
+### langfuse-worker
+
+| Variable | Kind | When | Keep | Meaning |
+|---|---|---|---|---|
+| `LANGFUSE_DB_PASSWORD` | generated | always |  | Password of the `langfuse` user on Postgres, which owns the `langfuse` database. Provisioning converges it to whatever this holds. |
+| `LANGFUSE_CLICKHOUSE_PASSWORD` | generated | always |  | Password of the `langfuse` user on ClickHouse, which reaches the `langfuse` database and nothing else. Provisioning converges it to whatever this holds. |
+| `LANGFUSE_S3_BUCKET` | bucket, delete | always |  | Name of the bucket. Enter to generate `userland-langfuse-s3-<8 hex>`, or type one you made. |
+| `LANGFUSE_S3_REGION` | bucket, delete | always |  | Region of the bucket, as the provider names it; `auto` on Cloudflare R2. |
+| `LANGFUSE_S3_ENDPOINT` | bucket, delete | always |  | URL the bucket is reached at. The offer writes `https://s3.<region>.amazonaws.com`. |
+| `LANGFUSE_S3_ACCESS_KEY_ID` | bucket, delete | always |  | Access key that reaches this bucket and nothing else. It may list the bucket and get, put and delete objects. |
+| `LANGFUSE_S3_SECRET_ACCESS_KEY` | bucket, delete | always |  | Its secret. |
+| `LANGFUSE_WORKER_MEM_LIMIT` | optional |  |  | Memory limit in compose's units, such as `2g`. Unbounded unless set. |
+
 ## metabase
 
 ### metabase

@@ -39,7 +39,7 @@ func TestProductOrderOnTheRealManifest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"fort", "clickhouse", "metabase", "n8n", "postgres", "traefik"}
+	want := []string{"fort", "langfuse", "clickhouse", "metabase", "n8n", "postgres", "traefik"}
 	if got := m.ProductOrder(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("order %v, want %v", got, want)
 	}
@@ -97,7 +97,7 @@ func TestAskForFindsAskedAndImpliedVariables(t *testing.T) {
 		t.Fatal(err)
 	}
 	c, a, ok := m.AskFor("METABASE_DB_PASSWORD")
-	if !ok || c.Name != "metabase" || a.Type != Generated {
+	if !ok || c.Name != "metabase" || a.Type != DatabasePassword {
 		t.Fatalf("implied password: %v %v %v", ok, c, a)
 	}
 	c, a, ok = m.AskFor("CF_DNS_API_TOKEN")
@@ -129,7 +129,7 @@ func TestClickHouseDatabaseIsAskedRefusedAndShared(t *testing.T) {
 	for _, a := range web.AllAsks() {
 		vars = append(vars, a.Var+":"+a.Type)
 	}
-	if !reflect.DeepEqual(vars, []string{"LANGFUSE_DB_PASSWORD:generated", "LANGFUSE_CH_PASSWORD:generated"}) {
+	if !reflect.DeepEqual(vars, []string{"LANGFUSE_DB_PASSWORD:database-password", "LANGFUSE_CH_PASSWORD:database-password"}) {
 		t.Fatalf("asks: %v", vars)
 	}
 	if c, _, ok := m.AskFor("LANGFUSE_CH_PASSWORD"); !ok || c.Name != "langfuse-web" {
