@@ -1,0 +1,13 @@
+#!/bin/sh
+set -e
+
+if [ -z "$FORT_KEY_NAME" ]; then
+	echo "fort-key: FORT_KEY_NAME is empty; the master key has no name to read" >&2
+	exit 1
+fi
+
+AWS_ACCESS_KEY_ID="$FORT_KEY_ACCESS_KEY_ID" \
+AWS_SECRET_ACCESS_KEY="$FORT_KEY_SECRET_ACCESS_KEY" \
+AWS_DEFAULT_REGION="$FORT_KEY_REGION" \
+AWS_REGION="$FORT_KEY_REGION" \
+exec ssmget "$FORT_KEY_NAME"

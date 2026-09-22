@@ -50,8 +50,12 @@ func (f *File) Get(key string) string {
 }
 
 func (f *File) List(key string) []string {
+	return f.ListBy(key, ",")
+}
+
+func (f *File) ListBy(key, separator string) []string {
 	var out []string
-	for _, item := range strings.Split(f.Get(key), ",") {
+	for _, item := range strings.Split(f.Get(key), separator) {
 		if item = strings.TrimSpace(item); item != "" {
 			out = append(out, item)
 		}

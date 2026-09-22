@@ -97,6 +97,7 @@ func TestLabelNamesWhoNeedsIt(t *testing.T) {
 	}
 	want := map[string]string{
 		"clickhouse":            "clickhouse",
+		"fort":                  "fort",
 		"metabase":              "metabase",
 		"n8n":                   "n8n: required by n8n-runners",
 		"n8n-runners":           "n8n-runners: optional for n8n",
@@ -151,10 +152,11 @@ func TestGeneratedNamesCarryTheDependencyAndATail(t *testing.T) {
 
 func TestChecklistVariesByPropertyNotByProduct(t *testing.T) {
 	plain := Checklist("DUMPS_S3", manifest.External{Kind: manifest.Bucket}, "b", "r")
-	versioned := Checklist("FORT_S3", manifest.External{Kind: manifest.Bucket, Versioned: true}, "b", "r")
-	deletes := Checklist("LANGFUSE_S3", manifest.External{Kind: manifest.Bucket, Delete: true}, "b", "r")
+	versioned := Checklist("OLD_S3", manifest.External{Kind: manifest.Bucket, Versioned: true}, "b", "r")
+	deletes := Checklist("LANGFUSE_S3", manifest.External{Kind: manifest.Bucket, Delete: manifest.DeleteAll}, "b", "r")
+	archive := Checklist("FORT_S3", manifest.External{Kind: manifest.Bucket, Versioned: true, Delete: "locks/*", NeverExpire: true}, "b", "r")
 	store := Checklist("FORT_KEY", manifest.External{Kind: manifest.SecretStore}, "/p", "r")
-	for name, text := range map[string]string{"plain": plain, "versioned": versioned, "delete": deletes} {
+	for name, text := range map[string]string{"plain": plain, "versioned": versioned, "delete": deletes, "archive": archive} {
 		if !strings.Contains(text, "1. Make a bucket named b in region r.") || !strings.Contains(text, "4. Enter the endpoint URL") || !strings.Contains(text, `README.md, "Object store"`) {
 			t.Errorf("%s lacks the fixed lines:\n%s", name, text)
 		}
@@ -165,16 +167,22 @@ func TestChecklistVariesByPropertyNotByProduct(t *testing.T) {
 	if !strings.Contains(versioned, "Turn versioning on") || !strings.Contains(versioned, "must not be able to delete") || !strings.Contains(versioned, "expires old versions") {
 		t.Fatalf("versioned:\n%s", versioned)
 	}
+	if !strings.Contains(archive, "Turn versioning on") || !strings.Contains(archive, "able to delete under locks/ and nowhere else") || !strings.Contains(archive, "Nothing may expire here") || strings.Contains(archive, "expires") {
+		t.Fatalf("archive:\n%s", archive)
+	}
 	if strings.Contains(deletes, "versioning") || !strings.Contains(deletes, "must also be able to delete") || !strings.Contains(deletes, "deletes on its own schedule") || strings.Contains(deletes, "Nothing in userland deletes") {
 		t.Fatalf("delete:\n%s", deletes)
 	}
 	if !strings.Contains(store, "SecureString parameter named /p in region r") || !strings.Contains(store, "ssm:GetParameter") || !strings.Contains(store, "kms:Decrypt on the aws/ssm key") || !strings.Contains(store, "3. Enter the access key id and its secret.") {
 		t.Fatalf("store:\n%s", store)
 	}
-	if strings.Contains(plain+versioned+deletes+store, "fort ") || strings.Contains(plain+versioned+deletes+store, "langfuse") {
-		t.Fatal("a product's name is in a kind's text")
+	if strings.Contains(plain+versioned+deletes+archive+store, "fort ") || strings.Contains(plain+versioned+deletes+archive+store, "restic") || strings.Contains(plain+versioned+deletes+archive+store, "langfuse") {
+		t.Fatal("a product's name, or the tool behind it, is in a kind's text")
 	}
-	if !strings.Contains(Retention("X", manifest.External{Kind: manifest.Bucket}), "or accept that it grows") || !strings.Contains(Retention("X", manifest.External{Kind: manifest.Bucket, Versioned: true}), "pile up") || !strings.Contains(Retention("X", manifest.External{Kind: manifest.Bucket, Delete: true}), "own schedule") {
+	if !strings.Contains(Retention("X", manifest.External{Kind: manifest.Bucket}), "or accept that it grows") || !strings.Contains(Retention("X", manifest.External{Kind: manifest.Bucket, Versioned: true}), "pile up") || !strings.Contains(Retention("X", manifest.External{Kind: manifest.Bucket, Delete: manifest.DeleteAll}), "own schedule") {
 		t.Fatal("Retention")
+	}
+	if never := Retention("X", manifest.External{Kind: manifest.Bucket, NeverExpire: true, Delete: "locks/*"}); !strings.Contains(never, "nothing may expire") || strings.Contains(never, "set a rule") {
+		t.Fatalf("Retention where nothing may expire: %s", never)
 	}
 }

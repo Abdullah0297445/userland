@@ -108,7 +108,7 @@ func checkTemplateBodies(r *Report, m *manifest.Manifest, templates *render.Temp
 			continue
 		}
 		for _, visibility := range Visibilities {
-			text, err := templates.Body(c, visibility, all)
+			text, err := templates.Body(c, visibility, all, render.Mounts(checkPaths(c)))
 			if err != nil {
 				r.fail("template %s (%s): %v", c.Name, visibility, err)
 				clean = false
@@ -206,6 +206,9 @@ func checkRendered(r *Report, root string, m *manifest.Manifest, visibility stri
 		if c.HTTP != nil {
 			synthetic.Set(render.PortVar(c.Name), fmt.Sprint(c.HTTP.Host))
 		}
+		if c.Files != "" {
+			synthetic.Set(c.Files, checkPaths(c))
+		}
 		synthetic.Set(render.MemLimitVar(c.Name), "1g")
 	}
 	out, err := render.Render(render.Input{Manifest: m, On: m.Names(), Visibility: visibility, Env: synthetic, Root: root})
@@ -277,6 +280,13 @@ func checkRendered(r *Report, root string, m *manifest.Manifest, visibility stri
 		r.pass("%s: every named volume is declared on the container that mounts it, and vice versa", visibility)
 	}
 	return nil
+}
+
+func checkPaths(c *manifest.Container) string {
+	if c.Files == "" {
+		return ""
+	}
+	return "/etc/" + c.Name + "-one/kept.env:/etc/" + c.Name + "-two/kept.env"
 }
 
 func composeConfigOf(root string, rendered []byte, synthetic *env.File) (*composeConfig, error) {

@@ -55,7 +55,7 @@ func command(root string) *cobra.Command {
 	cmd.AddCommand(
 		onCommand(root), offCommand(root), setCommand(root), reclaimCommand(root), contractCommand(root),
 		applyCommand(root), renderCommand(root), provisionCommand(root),
-		postgresCommand(root),
+		postgresCommand(root), fortCommand(root),
 		newCommand(root), checkCommand(root),
 	)
 	return cmd

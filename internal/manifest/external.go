@@ -2,6 +2,7 @@ package manifest
 
 import (
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 )
@@ -9,6 +10,9 @@ import (
 const (
 	Bucket      = "bucket"
 	SecretStore = "secret-store"
+
+	NoDelete  = ""
+	DeleteAll = "*"
 
 	BucketName    = "bucket-name"
 	ParameterName = "parameter-name"
@@ -26,19 +30,34 @@ var Kinds = []string{Bucket, SecretStore}
 
 var Providers = []string{"ssm"}
 
+var deletePrefix = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]*(/[a-z0-9._-]+)*/\*$`)
+
 type External struct {
-	Kind      string `json:"kind"`
-	Delete    bool   `json:"delete"`
-	Versioned bool   `json:"versioned"`
+	Kind        string `json:"kind"`
+	Delete      string `json:"delete"`
+	Versioned   bool   `json:"versioned"`
+	NeverExpire bool   `json:"never_expire"`
 }
+
+func (x External) CanDelete() bool { return x.Delete != NoDelete }
+
+func (x External) DeletesAnywhere() bool { return x.Delete == DeleteAll }
+
+func (x External) DeleteUnder() string { return strings.TrimSuffix(x.Delete, "/*") }
 
 func (x External) Describe() string {
 	parts := []string{x.Kind}
 	if x.Versioned {
 		parts = append(parts, "versioned")
 	}
-	if x.Delete {
+	switch {
+	case x.DeletesAnywhere():
 		parts = append(parts, "delete")
+	case x.CanDelete():
+		parts = append(parts, "delete under "+x.DeleteUnder()+"/")
+	}
+	if x.NeverExpire {
+		parts = append(parts, "never expire")
 	}
 	return strings.Join(parts, ", ")
 }
@@ -81,8 +100,11 @@ func (x External) check(container, prefix string) error {
 	if !contains(Kinds, x.Kind) {
 		return fmt.Errorf("manifest.json: %s's %s has kind %q; the kinds are %s", container, prefix, x.Kind, strings.Join(Kinds, " "))
 	}
-	if x.Kind == SecretStore && (x.Delete || x.Versioned) {
-		return fmt.Errorf("manifest.json: %s's %s is a secret store, which has no use for delete or versioned", container, prefix)
+	if x.Kind == SecretStore && (x.CanDelete() || x.Versioned || x.NeverExpire) {
+		return fmt.Errorf("manifest.json: %s's %s is a secret store, which has no use for delete, versioned or never_expire", container, prefix)
+	}
+	if x.CanDelete() && !x.DeletesAnywhere() && !deletePrefix.MatchString(x.Delete) {
+		return fmt.Errorf("manifest.json: %s's %s allows delete on %q; it is left out for never, %q for anywhere, or a prefix like %q", container, prefix, x.Delete, DeleteAll, "locks/*")
 	}
 	return nil
 }

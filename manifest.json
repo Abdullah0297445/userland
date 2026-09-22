@@ -16,6 +16,17 @@
         }
       }
     },
+    "fort": {
+      "containers": {
+        "fort": {
+          "files": "FORT_FILES",
+          "external": {
+            "FORT_S3": {"kind": "bucket", "versioned": true, "delete": "locks/*", "never_expire": true},
+            "FORT_KEY": {"kind": "secret-store"}
+          }
+        }
+      }
+    },
     "postgres": {
       "containers": {
         "postgres-18": {

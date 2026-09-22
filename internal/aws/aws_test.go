@@ -35,16 +35,16 @@ func TestParseReadsTheCodeAndTheOperation(t *testing.T) {
 
 func TestPoliciesMatchTheDecidedDocuments(t *testing.T) {
 	plain := `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["s3:ListBucket"],"Resource":"arn:aws:s3:::b"},{"Effect":"Allow","Action":["s3:GetObject","s3:PutObject","s3:AbortMultipartUpload"],"Resource":"arn:aws:s3:::b/*"}]}`
-	if got := BucketPolicy("b", false, false); got != plain {
+	if got := BucketPolicy("b", ""); got != plain {
 		t.Fatalf("plain:\n%s", got)
 	}
-	versioned := `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["s3:ListBucket","s3:GetBucketVersioning"],"Resource":"arn:aws:s3:::b"},{"Effect":"Allow","Action":["s3:GetObject","s3:PutObject","s3:AbortMultipartUpload"],"Resource":"arn:aws:s3:::b/*"}]}`
-	if got := BucketPolicy("b", false, true); got != versioned {
-		t.Fatalf("versioned:\n%s", got)
-	}
 	delete := `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["s3:ListBucket"],"Resource":"arn:aws:s3:::b"},{"Effect":"Allow","Action":["s3:GetObject","s3:PutObject","s3:AbortMultipartUpload","s3:DeleteObject"],"Resource":"arn:aws:s3:::b/*"}]}`
-	if got := BucketPolicy("b", true, false); got != delete {
+	if got := BucketPolicy("b", "*"); got != delete {
 		t.Fatalf("delete:\n%s", got)
+	}
+	locks := `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["s3:ListBucket"],"Resource":"arn:aws:s3:::b"},{"Effect":"Allow","Action":["s3:GetObject","s3:PutObject","s3:AbortMultipartUpload"],"Resource":"arn:aws:s3:::b/*"},{"Effect":"Allow","Action":["s3:DeleteObject"],"Resource":"arn:aws:s3:::b/locks/*"}]}`
+	if got := BucketPolicy("b", "locks/*"); got != locks {
+		t.Fatalf("delete under locks/:\n%s", got)
 	}
 	parameter := `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["ssm:GetParameter"],"Resource":"arn:aws:ssm:eu-west-1:123456789012:parameter/userland/fort-key-0a1b2c3d"},{"Effect":"Allow","Action":["kms:Decrypt"],"Resource":"arn:aws:kms:eu-west-1:123456789012:key/k"}]}`
 	if got := ParameterPolicy("eu-west-1", "123456789012", "/userland/fort-key-0a1b2c3d", "arn:aws:kms:eu-west-1:123456789012:key/k"); got != parameter {

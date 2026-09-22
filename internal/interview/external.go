@@ -229,7 +229,7 @@ func createBucket(w *writer, x manifest.External, out io.Writer) error {
 			return err
 		}
 	}
-	key, how, err := userAndKey(s, name, aws.BucketPolicy(name, x.Delete, x.Versioned))
+	key, how, err := userAndKey(s, name, aws.BucketPolicy(name, x.Delete))
 	if err != nil {
 		return err
 	}
@@ -333,12 +333,15 @@ func Checklist(prefix string, x manifest.External, name, region string) string {
 		fmt.Fprintf(&b, "\n%s needs a bucket. Make it yourself, at any S3-compatible provider:\n\n", prefix)
 		fmt.Fprintf(&b, "1. Make a bucket named %s in region %s.\n", name, region)
 		if x.Versioned {
-			b.WriteString("   Turn versioning on. The container keeps history as versions and refuses to run\n   without it; the README says how to opt out, with history one deep.\n")
+			b.WriteString("   Turn versioning on. Nothing here is ever overwritten, so an old version only\n   appears if something else wrote to this bucket; keeping them is what lets you\n   put the original back. The README says what to do where versioning is missing.\n")
 		}
 		b.WriteString("2. Make an access key that reaches this bucket and nothing else. It must list the\n   bucket and get and put objects.\n")
-		if x.Delete {
+		switch {
+		case x.DeletesAnywhere():
 			b.WriteString("   It must also be able to delete.\n")
-		} else {
+		case x.CanDelete():
+			fmt.Fprintf(&b, "   It must be able to delete under %s/ and nowhere else. Where a key cannot be\n   scoped to one prefix, the README says what you lose either way.\n", x.DeleteUnder())
+		default:
 			b.WriteString("   It must not be able to delete.\n")
 		}
 		b.WriteString("3. Decide retention. " + retention(x) + "\n")
@@ -357,7 +360,9 @@ func Checklist(prefix string, x manifest.External, name, region string) string {
 
 func retention(x manifest.External) string {
 	switch {
-	case x.Delete:
+	case x.NeverExpire:
+		return "Nothing may expire here. What this bucket holds is one archive\n   whose parts point at each other, so a rule that deletes an object by age\n   destroys the rest of it. It grows by bytes a day. Set no rule."
+	case x.DeletesAnywhere():
 		return "The container deletes on its own schedule; a rule for what it leaves\n   behind is yours."
 	case x.Versioned:
 		return "Nothing in userland deletes from this bucket. Add a rule at your\n   provider that expires old versions, or accept that they pile up."
@@ -367,7 +372,9 @@ func retention(x manifest.External) string {
 
 func Retention(prefix string, x manifest.External) string {
 	switch {
-	case x.Delete:
+	case x.NeverExpire:
+		return prefix + ": nothing may expire in this bucket; it holds one archive whose parts point at each other, so a rule that deletes an object by age destroys the rest of it. It grows by bytes a day."
+	case x.DeletesAnywhere():
 		return prefix + ": the container deletes from this bucket on its own schedule; a rule for what it leaves behind is yours."
 	case x.Versioned:
 		return prefix + ": nothing in userland deletes from this bucket; set a rule at your provider that expires old versions, or accept that they pile up."

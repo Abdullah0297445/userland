@@ -3,6 +3,7 @@ package render
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -26,11 +27,11 @@ func TestTemplatesReadWhichContainersAreOn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	with, err := templates.Body(m.Container("app"), "local", Set([]string{"app", "sidecar"}))
+	with, err := templates.Body(m.Container("app"), "local", Set([]string{"app", "sidecar"}), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	without, err := templates.Body(m.Container("app"), "local", Set([]string{"app"}))
+	without, err := templates.Body(m.Container("app"), "local", Set([]string{"app"}), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -39,5 +40,19 @@ func TestTemplatesReadWhichContainersAreOn(t *testing.T) {
 	}
 	if !strings.Contains(without, "MODE: internal") || strings.Contains(without, "MODE: external") {
 		t.Fatalf("with the sidecar off:\n%s", without)
+	}
+}
+
+func TestMountsPutEveryListedFilesDirectoryUnderFilesReadOnly(t *testing.T) {
+	got := Mounts("/srv/app/.env:/home/user/userland/.env:/srv/app/other.env: :relative")
+	want := []string{
+		"/home/user/userland:" + FilesRoot + "/home/user/userland:ro",
+		"/srv/app:" + FilesRoot + "/srv/app:ro",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("mounts %v", got)
+	}
+	if Mounts("") != nil {
+		t.Fatal("nothing kept is no mount")
 	}
 }

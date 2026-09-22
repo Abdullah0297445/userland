@@ -239,19 +239,23 @@ func (d document) String() string {
 	return string(out)
 }
 
-func BucketPolicy(bucket string, delete, versioned bool) string {
-	onBucket := []string{"s3:ListBucket"}
-	if versioned {
-		onBucket = append(onBucket, "s3:GetBucketVersioning")
-	}
+func BucketPolicy(bucket, delete string) string {
+	objects := "arn:aws:s3:::" + bucket + "/*"
 	onObjects := []string{"s3:GetObject", "s3:PutObject", "s3:AbortMultipartUpload"}
-	if delete {
-		onObjects = append(onObjects, "s3:DeleteObject")
+	statements := []statement{
+		{"Allow", []string{"s3:ListBucket"}, "arn:aws:s3:::" + bucket},
 	}
-	return document{"2012-10-17", []statement{
-		{"Allow", onBucket, "arn:aws:s3:::" + bucket},
-		{"Allow", onObjects, "arn:aws:s3:::" + bucket + "/*"},
-	}}.String()
+	switch {
+	case delete == "*":
+		statements = append(statements, statement{"Allow", append(onObjects, "s3:DeleteObject"), objects})
+	case delete != "":
+		statements = append(statements,
+			statement{"Allow", onObjects, objects},
+			statement{"Allow", []string{"s3:DeleteObject"}, "arn:aws:s3:::" + bucket + "/" + delete})
+	default:
+		statements = append(statements, statement{"Allow", onObjects, objects})
+	}
+	return document{"2012-10-17", statements}.String()
 }
 
 func ParameterPolicy(region, account, name, keyARN string) string {

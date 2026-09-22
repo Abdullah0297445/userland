@@ -21,6 +21,26 @@ An asked variable is collected by the interview when its container is switched o
 | `CLICKHOUSE_PASSWORD` | generated | always |  | Password of the ClickHouse admin user, default |
 | `CLICKHOUSE_MEM_LIMIT` | optional |  |  | Memory limit in compose's units, such as `2g`. Unbounded unless set. |
 
+## fort
+
+### fort
+
+| Variable | Kind | When | Keep | Meaning |
+|---|---|---|---|---|
+| `FORT_KEY_PROVIDER` | secret-store | always |  | Secret store the master key lives in; `ssm` is AWS Parameter Store, the one there is. |
+| `FORT_KEY_NAME` | secret-store | always |  | Name of the SecureString parameter that holds the master key. Enter to generate `/userland/fort-key-<8 hex>`, or type one you made. |
+| `FORT_KEY_REGION` | secret-store | always |  | Region of the parameter. |
+| `FORT_KEY_ACCESS_KEY_ID` | secret-store | always |  | Access key that may read this one parameter and nothing else. |
+| `FORT_KEY_SECRET_ACCESS_KEY` | secret-store | always |  | Its secret. |
+| `FORT_S3_BUCKET` | bucket, versioned, delete under locks/, never expire | always |  | Name of the bucket. Enter to generate `userland-fort-s3-<8 hex>`, or type one you made. |
+| `FORT_S3_REGION` | bucket, versioned, delete under locks/, never expire | always |  | Region of the bucket, as the provider names it; `auto` on Cloudflare R2. |
+| `FORT_S3_ENDPOINT` | bucket, versioned, delete under locks/, never expire | always |  | URL the bucket is reached at. The offer writes `https://s3.<region>.amazonaws.com`. |
+| `FORT_S3_ACCESS_KEY_ID` | bucket, versioned, delete under locks/, never expire | always |  | Access key that reaches this bucket and nothing else. It may list the bucket and get and put objects, and delete under `locks/` and nowhere else. |
+| `FORT_S3_SECRET_ACCESS_KEY` | bucket, versioned, delete under locks/, never expire | always |  | Its secret. |
+| `FORT_MEM_LIMIT` | optional |  |  | Memory limit in compose's units, such as `2g`. Unbounded unless set. |
+| `FORT_FILES` | optional |  |  | Absolute paths this container keeps, separated by colons, each one's directory mounted read-only under `/files`. Written by the CLI: `./bootstrap fort add PATH` and `remove PATH` change it. |
+| `FORT_SCHEDULE` | optional |  |  | Read by the template; defaults to `@daily`. |
+
 ## metabase
 
 ### metabase
