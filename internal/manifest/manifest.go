@@ -64,11 +64,14 @@ const (
 	Port      = "port"
 	Secret    = "secret"
 	Generated = "generated"
+	Hex       = "hex"
 	Choice    = "choice"
 	Paths     = "paths"
+
+	DatabasePassword = "database-password"
 )
 
-var AskTypes = []string{Text, Hostname, Email, URL, Port, Secret, Generated, Choice, Paths}
+var AskTypes = []string{Text, Hostname, Email, URL, Port, Secret, Generated, Hex, Choice, Paths}
 
 var (
 	identifierPattern = regexp.MustCompile(`^[a-z][a-z0-9_]{0,62}$`)
@@ -97,7 +100,7 @@ func (a Ask) Applies(visibility string, value func(string) string) bool {
 }
 
 func (a Ask) Hidden() bool {
-	return a.Type == Secret || a.Type == Generated
+	return a.Type == Secret || a.Type == Generated || a.Type == Hex || a.Type == DatabasePassword
 }
 
 func (a Ask) Condition() string {
@@ -263,10 +266,10 @@ func (c *Container) checkAsks() error {
 func (c *Container) PasswordAsks() []Ask {
 	var asks []Ask
 	if c.Postgres != nil {
-		asks = append(asks, Ask{Var: c.Postgres.Password, Type: Generated, Prompt: fmt.Sprintf("Password of the %s user on Postgres", c.Postgres.Database)})
+		asks = append(asks, Ask{Var: c.Postgres.Password, Type: DatabasePassword, Prompt: fmt.Sprintf("Password of the %s user on Postgres", c.Postgres.Database)})
 	}
 	if c.ClickHouse != nil {
-		asks = append(asks, Ask{Var: c.ClickHouse.Password, Type: Generated, Prompt: fmt.Sprintf("Password of the %s user on ClickHouse", c.ClickHouse.Database)})
+		asks = append(asks, Ask{Var: c.ClickHouse.Password, Type: DatabasePassword, Prompt: fmt.Sprintf("Password of the %s user on ClickHouse", c.ClickHouse.Database)})
 	}
 	return asks
 }

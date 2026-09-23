@@ -43,6 +43,36 @@ func TestTemplatesReadWhichContainersAreOn(t *testing.T) {
 	}
 }
 
+func TestAHelperTemplateIsIncludedAndIsNoContainer(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "compose"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	template := "{{ define \"app.environment\" }}\n  SHARED: {{ .Name }}\n{{- end }}\n\n{{ define \"app\" -}}\nimage: x\nenvironment:\n  " + MergeLine + "\n{{ template \"app.environment\" . }}\n  OWN: yes\n{{ end }}\n"
+	if err := os.WriteFile(filepath.Join(root, "compose", "app.yml"), []byte(template), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m, err := manifest.Parse([]byte(`{"products": {"app": {"containers": {"app": {}}}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	templates, err := Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := templates.Names(); !reflect.DeepEqual(got, []string{"app"}) {
+		t.Fatalf("names %v", got)
+	}
+	body, err := templates.Body(m.Container("app"), "local", Set([]string{"app"}), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "image: x\nenvironment:\n  " + MergeLine + "\n  SHARED: app\n  OWN: yes"
+	if body != want {
+		t.Fatalf("body:\n%s", body)
+	}
+}
+
 func TestMountsPutEveryListedFilesDirectoryUnderFilesReadOnly(t *testing.T) {
 	got := Mounts("/srv/app/.env:/home/user/userland/.env:/srv/app/other.env: :relative")
 	want := []string{

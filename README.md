@@ -10,7 +10,7 @@ and it is deliberately not one of them.
 
 > **This repo is being built in the open.** Today the interview writes `.env`, every verb
 > exists, and userland renders and runs traefik, the whole of Postgres — its doors and pgadmin —
-> ClickHouse, Metabase, n8n, and fort, which backs all of it up. The other containers arrive one at a time. The design is published as issues on this repo as
+> ClickHouse, Metabase, n8n, Langfuse, and fort, which backs all of it up. The other containers arrive one at a time. The design is published as issues on this repo as
 > it is settled.
 
 `userland` is the part of a running system that is not the kernel: everything the machine
@@ -166,7 +166,8 @@ apply brings them back.
 | `url` | A scheme and a host, like `https://example.com`. |
 | `port` | A number from 1 to 65535. |
 | `secret` | Pasted, hidden as you type. Never generated. |
-| `generated` | Enter for 26 URL-safe characters, or paste your own, hidden as you type. Every database password is one. |
+| `generated` | Enter for 26 URL-safe characters, or paste your own, hidden as you type. Every database password is one, and a pasted database password may hold only letters, digits, `-`, `.`, `_` and `~`, because it travels inside connection URLs. Provisioning sets a database password from `.env`, so pasting one is never needed. |
+| `hex` | Enter for a key of 64 hexadecimal characters, 256 bits, or paste one of the same shape, hidden as you type. For a product that reads its key as hex. |
 | `choice` | One of the manifest's options. |
 | `paths` | Absolute paths on this machine, joined by `:`, each of which must exist. |
 
@@ -576,6 +577,88 @@ database is on Postgres, so fort archives it with everything else.
 
 The two row limits, both connection pools and every other number run at Metabase's defaults.
 
+## Langfuse
+
+Langfuse is three containers. `langfuse-web` is the UI and the API your SDKs send traces to,
+and it runs every migration. `langfuse-worker` takes what was ingested off the queue and
+writes it to ClickHouse, and runs exports and Data Retention. `langfuse-redis` is that queue:
+langfuse's own Redis, which nothing else is ever pointed at. The web and worker images are
+**one version**, and every upgrade moves both.
+
+Leave `langfuse-worker` off and the web still takes traces, but nothing moves them from the
+queue into ClickHouse, so the UI stays empty. The interview warns. The worker starts only once
+the web is healthy, which is once both migrations are done.
+
+**Where everything lives.** Postgres holds what you configure: users, projects, prompts, API
+keys. ClickHouse holds what you see: traces, observations, scores, each in langfuse's own
+database and user, made by provisioning. Every event is written to your bucket first, under
+`events/`, and media and batch exports go to the same bucket under `media/` and `exports/`.
+The Redis volume holds only the queue, with append-only persistence on, so a restart loses no
+job, and `noeviction`, because langfuse requires it: an evicted key is a lost job. fort archives
+the two databases; the queue is not archived, since its jobs are minutes old and their events
+are in the bucket. ClickHouse runs as one container, which langfuse calls development-only, and
+*ClickHouse* says why userland accepts that.
+
+**Browsers and SDKs read and write media straight in your bucket through short-lived signed
+links, so the bucket must be reachable from wherever you use langfuse. A cloud bucket is.**
+Nothing is routed through traefik for it, and no CORS rule is needed: the UI shows an image
+with a signed link, not a script. Path-style requests are off, which AWS, Backblaze B2 and
+Cloudflare R2 all accept.
+
+**langfuse's access key is the one key here that may delete objects, because Data Retention
+deletes old traces and media nightly once you turn it on. It reaches langfuse's bucket and
+nothing else.** Retention is set per project, three days at least, and never touches exports:
+a lifecycle rule on `exports/` is the only thing that trims those, and like every rule it is
+yours. On a bucket with versioning on, Data Retention leaves delete markers and old versions
+behind, and a rule for those is yours too.
+
+**The databases.** `DATABASE_URL` goes through the transaction door. The migrations go through
+the session door, as `DIRECT_URL`, because Prisma holds a session-level advisory lock for the
+whole of a migration, which the transaction door cannot keep; `langfuse-web` requires both
+doors for that reason, and the worker only the first. On ClickHouse, the migrations make every table in
+langfuse's database. Langfuse requires both stores to run in UTC, which every container here
+does, and ClickHouse at 25.12 or later, which 26.8 is. Lightweight updates stay off, langfuse's
+default, so nothing is set on its ClickHouse user.
+
+**Accounts.** In local visibility signup is open, as langfuse ships it: the first visitor
+signs up and makes an organization. Only this machine resolves `langfuse.localhost`, but
+traefik listens on every interface in both visibilities, so on a network you share, anyone who
+sends that name to this machine reaches langfuse and can sign up too. In public visibility
+signup is off. The interview asks `LANGFUSE_INIT_USER_EMAIL` and generates
+`LANGFUSE_INIT_USER_PASSWORD`, and langfuse makes that account, the owner of an organization
+called `userland`, when it starts. Nobody else can make an account while signup is off,
+including someone you invite, so a teammate joins like this: add
+`LANGFUSE_AUTH_DISABLE_SIGNUP=false` to `.env`, apply, invite them and let them sign up,
+then remove the line and apply again. langfuse sends no email here, so a forgotten password
+cannot be reset from the sign-in page: langfuse's own way back is to rename the account in the
+database, sign up again, and move its memberships across. The first account is made once:
+changing the two lines later makes nothing and changes no password.
+
+**The keys.** `LANGFUSE_ENCRYPTION_KEY` encrypts the LLM API keys and integration credentials
+you save in langfuse, and it is a one-way door: losing it loses them, so the CLI names the line
+when it finishes. langfuse reads it as 64 hexadecimal characters, which is why it is asked as
+`hex`. `LANGFUSE_SALT` hashes API keys, and a new one costs nothing: langfuse checks a key the
+slow way once and re-hashes it with the new salt. A new `LANGFUSE_NEXTAUTH_SECRET` signs
+everyone out. The variables carry langfuse's name because `.env` is shared by every container,
+and `SALT` alone would claim a name any product might want; the template hands each to
+langfuse under its own name.
+
+**Health.** The web's healthcheck asks `/api/public/health` and the worker's `/api/health`.
+Both containers are told to listen on `0.0.0.0`: Docker sets `HOSTNAME` to the container's id,
+and langfuse listens on whatever `HOSTNAME` resolves to, so without it nothing answers on the
+container's loopback and the healthcheck fails. The web's `start_period` is five minutes, room
+for the first start's migrations; a fresh install took under half a minute.
+
+**Upgrading.** Both tags are exact. The web runs the new version's migrations when it starts,
+on Postgres and on ClickHouse, and langfuse documents which releases need more than that.
+Read the release notes between the two versions, take a fresh archive with
+`./bootstrap fort backup`, then move both tags together.
+
+Without traefik, langfuse listens on `127.0.0.1:3001`, since Metabase has 3000, and its links
+say so. `LANGFUSE_WEB_PORT` in `.env` is userland's loopback-port variable, as for every HTTP
+container; langfuse always listens on 3000 inside its container. Everything else, telemetry
+included, runs at langfuse's defaults.
+
 ## fort
 
 fort keeps off this host what you cannot lose with it: the files you name, and every database
@@ -808,7 +891,7 @@ is missing as you fill them in.
 | `clickhouse` | The `database` this container gets on ClickHouse, also its user's name, and the `.env` variable holding its `password`; a different variable from the Postgres one. Two containers naming one database share it. It implies `clickhouse` is on. No `settings`. |
 | `ports` | Ports published on every interface. traefik alone. |
 | `volumes` | Named volumes this container mounts. The top-level `volumes` block, "left behind" and `reclaim` all read this. A container may also mount a volume declared on one it depends on, as fort mounts ClickHouse's `clickhouse_backups`; the volume stays the declaring container's. |
-| `asks` | `var`, `type`, `prompt`, optional `when` (`public`, `local` or `VAR=value`) and `keep`. Types: `text hostname email url port secret generated choice paths`, described under *The interview*. |
+| `asks` | `var`, `type`, `prompt`, optional `when` (`public`, `local` or `VAR=value`) and `keep`. Types: `text hostname email url port secret generated hex choice paths`, described under *The interview*. |
 | `external` | `{"PREFIX": {"kind": "bucket"}}`, or `{"kind": "secret-store"}`. A bucket takes `"versioned": true`, `"never_expire": true`, and `"delete"` as `"*"` for any object or a prefix like `"locks/*"` for objects under it; left out, the key may never delete. The kind supplies five variables under the prefix, and the interview asks them with the offer and the checklist, under *Object store* and *Secret store*. Two containers naming one prefix share it and must describe it alike. |
 | `files` | The variable holding absolute paths this container keeps, separated by colons. Each path's directory is mounted read-only at the same place under `/files`. fort is the one, under *fort*. |
 | `renamed` | `{"OLD_NAME": "NEW_NAME"}`. The next run moves the `.env` value under its new name and drops the old line. |
@@ -827,6 +910,12 @@ is missing as you fill them in.
 - `.On "traefik"` says whether another container is in the selection, so a template can
   follow it: n8n points at its runners only while they are on, and sets its URLs only while
   traefik is.
+- A `define` whose name holds a dot, such as `langfuse.environment`, is a helper and no
+  container: another template in the file includes it with
+  `{{ template "langfuse.environment" . }}`, where it renders with that template's manifest.
+  langfuse's web and worker share their environment through one. Start a helper that is
+  included inside `environment` with a plain `{{ define … }}`, not `{{- define … -}}`, or the
+  trim eats its first line's indentation.
 - A container anything requires needs a healthcheck. Postgres's must probe over TCP:
   over the socket it is green while the image's temporary first-start server is up.
 - A named volume is both a line under `volumes` in the manifest and a mount in the

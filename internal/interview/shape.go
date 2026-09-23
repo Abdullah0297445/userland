@@ -2,6 +2,7 @@ package interview
 
 import (
 	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/mail"
@@ -16,14 +17,22 @@ import (
 )
 
 var (
-	hostname  = regexp.MustCompile(`^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
-	bucket    = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$`)
-	parameter = regexp.MustCompile(`^/?[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)*$`)
-	numeric   = regexp.MustCompile(`^[0-9.]+$`)
+	hostname   = regexp.MustCompile(`^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
+	bucket     = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$`)
+	parameter  = regexp.MustCompile(`^/?[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)*$`)
+	numeric    = regexp.MustCompile(`^[0-9.]+$`)
+	hexKey     = regexp.MustCompile(`^[0-9a-fA-F]{64}$`)
+	unreserved = regexp.MustCompile(`^[A-Za-z0-9._~-]+$`)
 )
 
 func Generate() string {
 	return rand.Text()
+}
+
+func GenerateHex() string {
+	key := make([]byte, 32)
+	rand.Read(key)
+	return hex.EncodeToString(key)
 }
 
 func Shape(kind string) func(string) error {
@@ -34,6 +43,29 @@ func Shape(kind string) func(string) error {
 				return nil
 			}
 			return safe(v)
+		}
+	case manifest.DatabasePassword:
+		return func(v string) error {
+			if v == "" {
+				return nil
+			}
+			if err := safe(v); err != nil {
+				return err
+			}
+			if !unreserved.MatchString(v) {
+				return errors.New("a database password travels inside connection URLs, so it may hold only letters, digits, - . _ and ~")
+			}
+			return nil
+		}
+	case manifest.Hex:
+		return func(v string) error {
+			if v == "" {
+				return nil
+			}
+			if !hexKey.MatchString(v) {
+				return errors.New("not a key of 64 hexadecimal characters, like the output of `openssl rand -hex 32`")
+			}
+			return nil
 		}
 	case manifest.Hostname:
 		return func(v string) error {

@@ -156,15 +156,18 @@ func Ask(a manifest.Ask) (string, error) {
 			options = append(options, option{label: o, value: o})
 		}
 		return selectOne(title, "", options)
-	case manifest.Generated:
+	case manifest.Generated, manifest.DatabasePassword, manifest.Hex:
 		value, err := input(title+" (enter to generate, or paste)", true, Shape(a.Type))
 		if err != nil {
 			return "", err
 		}
-		if value == "" {
-			return Generate(), nil
+		switch {
+		case value != "":
+			return value, nil
+		case a.Type == manifest.Hex:
+			return GenerateHex(), nil
 		}
-		return value, nil
+		return Generate(), nil
 	default:
 		return input(title, a.Hidden(), Shape(a.Type))
 	}

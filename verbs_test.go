@@ -44,6 +44,10 @@ func TestLeftBehindNamesVolumesAndAnUnsharedDatabase(t *testing.T) {
 	if len(both.volumes) != 2 || len(both.databases) != 1 || both.notes["userland_postgres_data"] == "" {
 		t.Fatalf("merge: %+v", both)
 	}
+	worker = leftBehind(m, []string{"postgres-18"}, m.Container("langfuse-worker"))
+	if together := web.merge(worker); together.String() != "volume userland_langfuse_media, database langfuse and its user on Postgres" {
+		t.Fatalf("web and worker switched off together name their shared database once: %q", together.String())
+	}
 }
 
 func TestLeftBehindNamesAClickHouseDatabaseAndTheStoreThatIsOff(t *testing.T) {

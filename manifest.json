@@ -98,6 +98,41 @@
           ]
         }
       }
+    },
+    "langfuse": {
+      "containers": {
+        "langfuse-web": {
+          "requires": ["pgbouncer-transaction", "pgbouncer-session", "langfuse-redis", "clickhouse"],
+          "optional": ["traefik", "langfuse-worker"],
+          "http": {"container": 3000, "host": 3001, "subdomain": "langfuse"},
+          "postgres": {"database": "langfuse", "password": "LANGFUSE_DB_PASSWORD"},
+          "clickhouse": {"database": "langfuse", "password": "LANGFUSE_CLICKHOUSE_PASSWORD"},
+          "external": {
+            "LANGFUSE_S3": {"kind": "bucket", "delete": "*"}
+          },
+          "asks": [
+            {"var": "LANGFUSE_ENCRYPTION_KEY", "type": "hex", "prompt": "Key langfuse encrypts saved LLM and integration credentials with", "keep": true},
+            {"var": "LANGFUSE_SALT", "type": "generated", "prompt": "Salt langfuse hashes API keys with"},
+            {"var": "LANGFUSE_NEXTAUTH_SECRET", "type": "generated", "prompt": "Secret langfuse signs sign-in sessions with"},
+            {"var": "LANGFUSE_INIT_USER_EMAIL", "type": "email", "prompt": "Email address of the first langfuse account", "when": "public"},
+            {"var": "LANGFUSE_INIT_USER_PASSWORD", "type": "generated", "prompt": "Password of the first langfuse account", "when": "public"}
+          ]
+        },
+        "langfuse-worker": {
+          "requires": ["langfuse-web", "pgbouncer-transaction", "langfuse-redis", "clickhouse"],
+          "postgres": {"database": "langfuse", "password": "LANGFUSE_DB_PASSWORD"},
+          "clickhouse": {"database": "langfuse", "password": "LANGFUSE_CLICKHOUSE_PASSWORD"},
+          "external": {
+            "LANGFUSE_S3": {"kind": "bucket", "delete": "*"}
+          }
+        },
+        "langfuse-redis": {
+          "volumes": ["langfuse_redis_data"],
+          "asks": [
+            {"var": "LANGFUSE_REDIS_PASSWORD", "type": "generated", "prompt": "Password of langfuse's own Redis"}
+          ]
+        }
+      }
     }
   }
 }

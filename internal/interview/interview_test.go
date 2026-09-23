@@ -20,8 +20,11 @@ func TestShapes(t *testing.T) {
 		manifest.URL:       {"https://s3.example.com", "http://127.0.0.1:9000/path"},
 		manifest.Port:      {"1", "8080", "65535"},
 		manifest.Secret:    {"abc123", "AKIA+/="},
-		manifest.Generated: {"", "pasted"},
+		manifest.Generated: {"", "pasted", "p@ss:w/rd"},
+		manifest.Hex:       {"", strings.Repeat("0f", 32), strings.Repeat("AB", 32)},
 		manifest.Paths:     {dir, dir + ":" + dir},
+
+		manifest.DatabasePassword: {"", "ABCDEFGHJKMNPQRSTVWXYZ2345", "a-b.c_d~e"},
 	}
 	bad := map[string][]string{
 		manifest.Text:      {"", " padded", "has$dollar", "has#hash", `has"quote`, "two\nlines"},
@@ -31,7 +34,10 @@ func TestShapes(t *testing.T) {
 		manifest.Port:      {"", "0", "65536", "http"},
 		manifest.Secret:    {"", "it's"},
 		manifest.Generated: {"has$dollar"},
+		manifest.Hex:       {"pasted", strings.Repeat("0f", 31), strings.Repeat("0g", 32), strings.Repeat("0f", 33)},
 		manifest.Paths:     {"", "relative/path", filepath.Join(dir, "missing")},
+
+		manifest.DatabasePassword: {"p@ss", "user:pass", "a/b", "50%", "a?b", "a&b", "a=b", "a+b", "has$dollar"},
 	}
 	for kind, values := range ok {
 		for _, v := range values {
@@ -54,6 +60,17 @@ func TestGenerateIsSafeAndLong(t *testing.T) {
 	for i := 0; i < 100; i++ {
 		v := Generate()
 		if len(v) < 26 || safe(v) != nil || seen[v] {
+			t.Fatalf("generated %q", v)
+		}
+		seen[v] = true
+	}
+}
+
+func TestGenerateHexIsAKeyOf256Bits(t *testing.T) {
+	seen := map[string]bool{}
+	for i := 0; i < 100; i++ {
+		v := GenerateHex()
+		if Shape(manifest.Hex)(v) != nil || v == "" || seen[v] {
 			t.Fatalf("generated %q", v)
 		}
 		seen[v] = true
@@ -101,16 +118,19 @@ func TestLabelNamesWhoNeedsIt(t *testing.T) {
 		got[c.Name] = label(m, c)
 	}
 	want := map[string]string{
-		"clickhouse":            "clickhouse: optional for fort",
+		"clickhouse":            "clickhouse: required by langfuse-web, langfuse-worker; optional for fort",
 		"fort":                  "fort",
+		"langfuse-redis":        "langfuse-redis: required by langfuse-web, langfuse-worker",
+		"langfuse-web":          "langfuse-web: required by langfuse-worker",
+		"langfuse-worker":       "langfuse-worker: optional for langfuse-web",
 		"metabase":              "metabase",
 		"n8n":                   "n8n: required by n8n-runners",
 		"n8n-runners":           "n8n-runners: optional for n8n",
 		"pgadmin":               "pgadmin",
-		"pgbouncer-session":     "pgbouncer-session",
-		"pgbouncer-transaction": "pgbouncer-transaction: required by metabase, n8n",
+		"pgbouncer-session":     "pgbouncer-session: required by langfuse-web",
+		"pgbouncer-transaction": "pgbouncer-transaction: required by langfuse-web, langfuse-worker, metabase, n8n",
 		"postgres-18":           "postgres-18: required by pgadmin, pgbouncer-session, pgbouncer-transaction; optional for fort",
-		"traefik":               "traefik: optional for metabase, n8n, pgadmin",
+		"traefik":               "traefik: optional for langfuse-web, metabase, n8n, pgadmin",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("labels %v", got)
