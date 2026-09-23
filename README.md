@@ -10,7 +10,7 @@ and it is deliberately not one of them.
 
 > **This repo is being built in the open.** Today the interview writes `.env`, every verb
 > exists, and userland renders and runs traefik, the whole of Postgres — its doors and pgadmin —
-> ClickHouse, Metabase, n8n, Langfuse, and fort, which backs all of it up. The other containers arrive one at a time. The design is published as issues on this repo as
+> ClickHouse, Metabase, n8n, Langfuse, Twenty, and fort, which backs all of it up. The other containers arrive one at a time. The design is published as issues on this repo as
 > it is settled.
 
 `userland` is the part of a running system that is not the kernel: everything the machine
@@ -26,7 +26,7 @@ runs *for you*. This repo is that layer, for one host.
 | **fort** | Keeps the files you name, `.env` first, and every database on Postgres and ClickHouse, in a bucket of its own as [restic](https://restic.net) snapshots, under a master key that never touches the host. |
 
 Two things are pointed at rather than run: an S3-compatible object store you bring, which
-fort and Langfuse each need a bucket of, and a secret store you own, which holds fort's
+fort, Langfuse and Twenty each need a bucket of, and a secret store you own, which holds fort's
 master key.
 
 The interview offers to make each of those for you on AWS, with admin credentials it uses
@@ -34,7 +34,8 @@ once and never writes, and it adopts what already exists in your account rather 
 a second one. Decline, and it prints a checklist with your names filled in, for any
 S3-compatible provider. Each bucket is reached by an access key of its own. fort's may delete
 under `locks/` and nowhere else, so a compromised host cannot erase its own archives;
-Langfuse's may delete, because its Data Retention feature does. Nothing may ever expire in
+Langfuse's may delete, because its Data Retention feature does, and so may Twenty's, because
+it moves a file by copying it and deleting the original. Nothing may ever expire in
 fort's, and *Object store* says why.
 
 Each application gets its own database on the shared Postgres, owned by a user of the same
@@ -166,7 +167,8 @@ apply brings them back.
 | `url` | A scheme and a host, like `https://example.com`. |
 | `port` | A number from 1 to 65535. |
 | `secret` | Pasted, hidden as you type. Never generated. |
-| `generated` | Enter for 26 URL-safe characters, or paste your own, hidden as you type. Every database password is one, and a pasted database password may hold only letters, digits, `-`, `.`, `_` and `~`, because it travels inside connection URLs. Provisioning sets a database password from `.env`, so pasting one is never needed. |
+| `generated` | Enter for 26 URL-safe characters, or paste your own, hidden as you type. |
+| `database-password` | The same, except that a paste may hold only letters, digits, `-`, `.`, `_` and `~`, because the product carries it inside a connection URL. Every Postgres and ClickHouse password is one; provisioning sets it from `.env`, so pasting one is never needed. A product that reads its Redis from a URL asks that password as one too. |
 | `hex` | Enter for a key of 64 hexadecimal characters, 256 bits, or paste one of the same shape, hidden as you type. For a product that reads its key as hex. |
 | `choice` | One of the manifest's options. |
 | `paths` | Absolute paths on this machine, joined by `:`, each of which must exist. |
@@ -238,8 +240,8 @@ configurable. Outside the offer nothing in the interview reaches the network.
 the bucket, gets and puts objects, and aborts a multipart upload, since a killed upload leaves
 parts behind and abort can never remove a finished object. `delete` says what else it may remove.
 Left out, nothing, and that is the default, so a compromised host cannot erase its own archives.
-`"*"` means any object in the bucket; langfuse's is the one, because its Data Retention feature
-deletes. A prefix such as `"locks/*"` means objects under that prefix and nowhere else; fort's is
+`"*"` means any object in the bucket; langfuse's and twenty's are the two, because langfuse's
+Data Retention feature deletes and twenty moves a file by copying it and deleting the original. A prefix such as `"locks/*"` means objects under that prefix and nowhere else; fort's is
 the one, so a backup can clear the lock file it just wrote and cannot touch the archive. Nothing
 in userland reads whether versioning is on, so no key may. This is the document the offer writes
 for a bucket with no `delete`; `"*"` adds `s3:DeleteObject` to the second statement, and a prefix
@@ -659,6 +661,104 @@ say so. `LANGFUSE_WEB_PORT` in `.env` is userland's loopback-port variable, as f
 container; langfuse always listens on 3000 inside its container. Everything else, telemetry
 included, runs at langfuse's defaults.
 
+## Twenty
+
+Twenty is three containers. `twenty-server` is the UI and the API, and it runs every
+migration when it starts. `twenty-worker` runs the background jobs: imports, workflows, mail
+and calendar sync, and the scheduled jobs the server registers each time it starts.
+`twenty-redis` holds the queue and the cache: twenty's own Redis, which nothing else is ever
+pointed at, so its pub/sub is heard by nothing else either. It runs `noeviction`, because an
+evicted key is a lost job, with append-only persistence, so a restart loses no queued job.
+The server and worker run one image at **one version**, and every upgrade moves both.
+
+Leave `twenty-worker` off and the UI still works, but no job runs: nothing imports, no
+workflow fires, and what was queued waits in Redis. The interview warns. The worker starts
+only once the server is healthy, which is once its migrations are done.
+
+**The session door, and why.** twenty holds a session-scoped advisory lock across a callback,
+in workspace deletion and in the job that cleans up suspended workspaces. On the transaction
+door that lock leaks, because the door hands the connection to someone else between
+transactions: two workers enter the section the lock guards, and the unlock raises. So both
+containers name `pgbouncer-session`. twenty keeps pools of its own, of up to 10 connections
+each, and holds an idle connection for ten minutes; a fresh install with one person signed in
+held 22. That is why the session door lends as many connections as Postgres accepts. At
+pgbouncer's default of 20 per database, twenty filled the door within a minute of starting,
+its requests waited in line, and twenty gave up on each after ten seconds with
+`Query read timeout`. No pool size is set for twenty.
+
+**The extensions.** twenty creates `uuid-ossp`, `unaccent` and `citext` in its database on
+its first start. All three are trusted extensions that ship with Postgres, so the database's
+own user installs them, and no superuser is involved. **twenty swallows database errors**: its
+setup catches a failed statement and carries on, so a refused extension does not stop the
+start. It surfaces later as a broken `searchVector` column, which is how twenty searches
+records. So verify what twenty made rather than trusting a clean start: once a workspace
+exists, every object in its schema has a generated `searchVector` column, and a saved
+record's is filled in.
+
+```sh
+docker exec postgres-18 psql -U postgres -d twenty -c "SELECT count(*) FROM information_schema.columns WHERE column_name = 'searchVector' AND is_generated = 'ALWAYS'"
+```
+
+**The first start.** On an empty database twenty's entrypoint sets up the schema, migrates,
+upgrades, flushes its cache and registers its scheduled jobs, and only then starts the
+server; a fresh install was healthy in about 40 seconds. Before the first migration it looks
+for tables that do not exist yet, so a first start logs `relation "core.…" does not exist` a
+few times, and that is expected. The setup script has been reported never to close its
+connection against a Postgres of your own, so the process never exits and the migrations
+never run ([twentyhq/twenty#23786](https://github.com/twentyhq/twenty/issues/23786)). The
+report is closed and the script unchanged, and here it exited behind the session door; a
+first start that stops after `create immutable unaccent wrapper function` is that, and it is
+the first thing to look at. The healthcheck's `start_period` is five minutes.
+
+**Files go to your bucket.** Attachments, pictures, logos and everything else twenty stores as
+a file go to `TWENTY_S3`, and nothing is kept on the host. twenty also keeps the app
+marketplace's images there, which the worker copies in on a schedule, about 18 MB on a fresh
+install, and each workspace's generated client code. Creating a workspace writes to the
+bucket, so it fails with *An error occurred* while the bucket cannot be reached. Downloads go
+through twenty rather than to the bucket directly, so no CORS rule is needed and the bucket
+need not be reachable from your browser. Path-style requests are always on in twenty, and
+AWS, Backblaze B2 and Cloudflare R2 all accept them.
+
+**twenty's access key may delete anything in its bucket**, because twenty moves a file by
+copying it and deleting the original, and deletes a file when you delete its attachment. It
+reaches twenty's bucket and nothing else. fort archives twenty's database, not the bucket, so
+a file you delete in twenty is gone even while an older snapshot of the database still names
+it.
+
+**Accounts.** The first person to sign up creates the workspace and becomes twenty's server
+admin. After that nobody signs up without an invitation, since twenty lets only a server admin
+make another workspace. In local visibility only this machine resolves `twenty.localhost`,
+but traefik listens on every interface, so on a network you share, anyone who sends that name
+to this machine reaches twenty. **In public visibility, sign up the moment twenty is
+healthy.** Until the first account exists, anyone who reaches `twenty.` under your domain
+becomes the server admin, and traefik's certificate for that name appears in public
+certificate logs within minutes of switching twenty on. twenty sends no email here: its mail
+driver writes each message to its log instead, so a password reset or an invitation is in
+`docker logs twenty-server`.
+
+**The keys.** `TWENTY_ENCRYPTION_KEY` encrypts the keys twenty signs sessions with and every
+credential you save in it, such as a connected mail account, and it is a one-way door: losing
+it loses them and signs everyone out, so the CLI names the line when it finishes. twenty reads
+it as `ENCRYPTION_KEY`; the variable carries twenty's name because `.env` is shared by every
+container. twenty's older `APP_SECRET` is read only by an instance that predates that key, so
+it is neither asked nor written. To change the key, twenty's own rotation reads the old one
+from `FALLBACK_ENCRYPTION_KEY`. `TWENTY_REDIS_PASSWORD` travels inside `REDIS_URL`, the only
+way twenty takes its Redis, so it is asked as a `database-password`.
+
+**Health.** The server's healthcheck asks `/healthz` with the image's `curl`. The worker serves
+nothing over HTTP and nothing requires it, so it has no healthcheck.
+
+**Upgrading.** The tag is exact, never `latest`. Each time the server starts it runs twenty's
+upgrade before it serves, which migrates the core schema and every workspace, and it starts
+anyway, with a warning in its log, when a workspace fails to migrate. Read the release notes
+between the two versions, take a fresh archive with `./bootstrap fort backup`, then move the
+tag, which moves both containers.
+
+Without traefik, twenty listens on `127.0.0.1:3002`, since Metabase has 3000 and Langfuse
+3001, and its links say so. `TWENTY_SERVER_PORT` in `.env` is userland's loopback-port
+variable, as for every HTTP container; twenty always listens on 3000 inside its container.
+Everything else, telemetry and the marketplace's catalogue included, runs at twenty's defaults.
+
 ## fort
 
 fort keeps off this host what you cannot lose with it: the files you name, and every database
@@ -808,6 +908,8 @@ you are in:
   `pgbouncer-session` is for one that does, whether a `SET`, a `LISTEN`, a session-scoped
   advisory lock or a prepared statement it reuses; it pins one Postgres connection for as
   long as the consumer holds its own, so the consumer must release connections promptly.
+  The session door lends up to 100 connections per database, Postgres's own limit, so
+  there Postgres decides and not the door; the transaction door lends pgbouncer's 20.
   `pg_dump`, pgadmin and PostgREST bypass the doors and name `postgres-18:5432` directly.
 - **traefik's labels**: the rule (`NAME.localhost`, or `NAME.DOMAIN` in public), the
   entrypoint (`web`, or `websecure` in public with the certificate resolver `letsencrypt`),
@@ -949,7 +1051,10 @@ in.
   you, under a master key that lives in a secret store you own.
 - **Postgres and the doors run at their images' defaults.** No pool size, connection
   ceiling or memory setting is written anywhere in this repo, beyond the two doors'
-  client ceiling. Measure first; a number guessed in advance is worse than none. n8n's
+  client ceiling and the session door's pool, which is Postgres's own connection limit so
+  that the door is never the tighter one. At pgbouncer's 20, Twenty alone filled the
+  session door within a minute of starting, and its requests waited in line until Twenty
+  gave up on them. Measure first; a number guessed in advance is worse than none. n8n's
   five-minute query limit is n8n's own default, moved onto its Postgres user because the
   door discards it where n8n sets it; it is not a number of ours.
 

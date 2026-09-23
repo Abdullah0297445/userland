@@ -133,6 +133,35 @@
           ]
         }
       }
+    },
+    "twenty": {
+      "containers": {
+        "twenty-server": {
+          "requires": ["pgbouncer-session", "twenty-redis"],
+          "optional": ["traefik", "twenty-worker"],
+          "http": {"container": 3000, "host": 3002, "subdomain": "twenty"},
+          "postgres": {"database": "twenty", "password": "TWENTY_DB_PASSWORD"},
+          "external": {
+            "TWENTY_S3": {"kind": "bucket", "delete": "*"}
+          },
+          "asks": [
+            {"var": "TWENTY_ENCRYPTION_KEY", "type": "generated", "prompt": "Key twenty encrypts its signing keys and saved credentials with", "keep": true}
+          ]
+        },
+        "twenty-worker": {
+          "requires": ["twenty-server", "pgbouncer-session", "twenty-redis"],
+          "postgres": {"database": "twenty", "password": "TWENTY_DB_PASSWORD"},
+          "external": {
+            "TWENTY_S3": {"kind": "bucket", "delete": "*"}
+          }
+        },
+        "twenty-redis": {
+          "volumes": ["twenty_redis_data"],
+          "asks": [
+            {"var": "TWENTY_REDIS_PASSWORD", "type": "database-password", "prompt": "Password of twenty's own Redis"}
+          ]
+        }
+      }
     }
   }
 }

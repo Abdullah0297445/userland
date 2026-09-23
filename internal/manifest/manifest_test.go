@@ -39,7 +39,7 @@ func TestProductOrderOnTheRealManifest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"fort", "langfuse", "clickhouse", "metabase", "n8n", "postgres", "traefik"}
+	want := []string{"fort", "langfuse", "clickhouse", "metabase", "n8n", "twenty", "postgres", "traefik"}
 	if got := m.ProductOrder(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("order %v, want %v", got, want)
 	}

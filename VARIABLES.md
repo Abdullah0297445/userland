@@ -162,3 +162,38 @@ An asked variable is collected by the interview when its container is switched o
 | `TRAEFIK_MEM_LIMIT` | optional |  |  | Memory limit in compose's units, such as `2g`. Unbounded unless set. |
 | `AWS_REGION` | optional |  |  | Read by the template; defaults to `us-east-1`. |
 
+## twenty
+
+### twenty-redis
+
+| Variable | Kind | When | Keep | Meaning |
+|---|---|---|---|---|
+| `TWENTY_REDIS_PASSWORD` | database-password | always |  | Password of twenty's own Redis |
+| `TWENTY_REDIS_MEM_LIMIT` | optional |  |  | Memory limit in compose's units, such as `2g`. Unbounded unless set. |
+
+### twenty-server
+
+| Variable | Kind | When | Keep | Meaning |
+|---|---|---|---|---|
+| `TWENTY_ENCRYPTION_KEY` | generated | always | yes | Key twenty encrypts its signing keys and saved credentials with |
+| `TWENTY_DB_PASSWORD` | generated | always |  | Password of the `twenty` user on Postgres, which owns the `twenty` database. Provisioning converges it to whatever this holds. |
+| `TWENTY_S3_BUCKET` | bucket, delete | always |  | Name of the bucket. Enter to generate `userland-twenty-s3-<8 hex>`, or type one you made. |
+| `TWENTY_S3_REGION` | bucket, delete | always |  | Region of the bucket, as the provider names it; `auto` on Cloudflare R2. |
+| `TWENTY_S3_ENDPOINT` | bucket, delete | always |  | URL the bucket is reached at. The offer writes `https://s3.<region>.amazonaws.com`. |
+| `TWENTY_S3_ACCESS_KEY_ID` | bucket, delete | always |  | Access key that reaches this bucket and nothing else. It may list the bucket and get, put and delete objects. |
+| `TWENTY_S3_SECRET_ACCESS_KEY` | bucket, delete | always |  | Its secret. |
+| `TWENTY_SERVER_PORT` | optional |  |  | Loopback port to publish on while traefik is on; nothing is published unless it is set. With traefik off the container publishes on `127.0.0.1:3002` regardless. |
+| `TWENTY_SERVER_MEM_LIMIT` | optional |  |  | Memory limit in compose's units, such as `2g`. Unbounded unless set. |
+
+### twenty-worker
+
+| Variable | Kind | When | Keep | Meaning |
+|---|---|---|---|---|
+| `TWENTY_DB_PASSWORD` | generated | always |  | Password of the `twenty` user on Postgres, which owns the `twenty` database. Provisioning converges it to whatever this holds. |
+| `TWENTY_S3_BUCKET` | bucket, delete | always |  | Name of the bucket. Enter to generate `userland-twenty-s3-<8 hex>`, or type one you made. |
+| `TWENTY_S3_REGION` | bucket, delete | always |  | Region of the bucket, as the provider names it; `auto` on Cloudflare R2. |
+| `TWENTY_S3_ENDPOINT` | bucket, delete | always |  | URL the bucket is reached at. The offer writes `https://s3.<region>.amazonaws.com`. |
+| `TWENTY_S3_ACCESS_KEY_ID` | bucket, delete | always |  | Access key that reaches this bucket and nothing else. It may list the bucket and get, put and delete objects. |
+| `TWENTY_S3_SECRET_ACCESS_KEY` | bucket, delete | always |  | Its secret. |
+| `TWENTY_WORKER_MEM_LIMIT` | optional |  |  | Memory limit in compose's units, such as `2g`. Unbounded unless set. |
+

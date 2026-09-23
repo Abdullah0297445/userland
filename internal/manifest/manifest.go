@@ -71,7 +71,7 @@ const (
 	DatabasePassword = "database-password"
 )
 
-var AskTypes = []string{Text, Hostname, Email, URL, Port, Secret, Generated, Hex, Choice, Paths}
+var AskTypes = []string{Text, Hostname, Email, URL, Port, Secret, Generated, DatabasePassword, Hex, Choice, Paths}
 
 var (
 	identifierPattern = regexp.MustCompile(`^[a-z][a-z0-9_]{0,62}$`)
