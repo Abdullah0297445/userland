@@ -28,7 +28,7 @@ func TestInsertAppendsAProductTheRealManifestLoads(t *testing.T) {
 	if m.Container("whoami") == nil || m.Container("whoami-worker") == nil || m.Container("whoami").Product != "whoami" {
 		t.Fatalf("containers after insert: %v", m.Names())
 	}
-	if len(m.Products) != 8 || m.Container("metabase") == nil {
+	if len(m.Products) != 9 || m.Container("metabase") == nil {
 		t.Fatalf("products after insert: %d", len(m.Products))
 	}
 	if !strings.Contains(string(out), "    },\n    \"whoami\": {\n      \"containers\": {\n        \"whoami\": {\n          \"requires\": [],") {

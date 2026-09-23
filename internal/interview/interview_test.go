@@ -127,10 +127,13 @@ func TestLabelNamesWhoNeedsIt(t *testing.T) {
 		"n8n":                   "n8n: required by n8n-runners",
 		"n8n-runners":           "n8n-runners: optional for n8n",
 		"pgadmin":               "pgadmin",
-		"pgbouncer-session":     "pgbouncer-session: required by langfuse-web",
+		"pgbouncer-session":     "pgbouncer-session: required by langfuse-web, twenty-server, twenty-worker",
 		"pgbouncer-transaction": "pgbouncer-transaction: required by langfuse-web, langfuse-worker, metabase, n8n",
 		"postgres-18":           "postgres-18: required by pgadmin, pgbouncer-session, pgbouncer-transaction; optional for fort",
-		"traefik":               "traefik: optional for langfuse-web, metabase, n8n, pgadmin",
+		"traefik":               "traefik: optional for langfuse-web, metabase, n8n, pgadmin, twenty-server",
+		"twenty-redis":          "twenty-redis: required by twenty-server, twenty-worker",
+		"twenty-server":         "twenty-server: required by twenty-worker",
+		"twenty-worker":         "twenty-worker: optional for twenty-server",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("labels %v", got)
