@@ -10,6 +10,7 @@ import (
 	"github.com/Abdullah0297445/userland/internal/interview"
 	"github.com/Abdullah0297445/userland/internal/manifest"
 	"github.com/Abdullah0297445/userland/internal/provision"
+	"github.com/Abdullah0297445/userland/internal/render"
 )
 
 func postgresCommand(root string) *cobra.Command {
@@ -101,12 +102,12 @@ func addDatabase(m *manifest.Manifest, e *env.File, name string, session, api bo
 		say("  door PostgREST's LISTEN reload breaks silently while every health check passes, so before you paste PGRST_DB_URI,")
 		say(fmt.Sprintf("  check that it holds _authenticator and @%s.", manifest.Postgres))
 	}
+	say("")
+	say(fmt.Sprintf("  To reach it, the consumer's compose file declares %s external and joins it.", render.Network(m.Container(door).Product)))
 	if !contains(on, door) {
 		say("")
 		say(fmt.Sprintf("warning: %s is off, and the DSN names it; switch it on before the consumer starts", door))
 	}
-	say("")
-	say(contract.Text(m, e, on))
 	return nil
 }
 

@@ -37,7 +37,7 @@ func reclaimCommand(root string) *cobra.Command {
 }
 
 func contractCommand(root string) *cobra.Command {
-	return verb(root, "contract", "Print the Contract: what a consumer needs to use userland.", operate, cobra.NoArgs, func(m *manifest.Manifest, e *env.File, _ string, _ []string) error {
+	return verb(root, "contract", "Print the Contract: what is on, and how to reach it.", operate, cobra.NoArgs, func(m *manifest.Manifest, e *env.File, _ string, _ []string) error {
 		say(contract.Text(m, e, e.List(interview.On)))
 		return nil
 	})
@@ -519,23 +519,16 @@ func closing(m *manifest.Manifest, e *env.File, on []string, asked []string) {
 				said[prefix] = true
 			}
 		}
-		if c.HTTP != nil {
-			switch {
-			case !contains(on, manifest.Proxy):
-				say(fmt.Sprintf("%s: http://127.0.0.1:%d", c.Name, c.HTTP.Host))
-			case e.Get(interview.Visibility) == "public":
-				say(fmt.Sprintf("%s: https://%s.%s", c.Name, c.HTTP.Subdomain, e.Get("DOMAIN")))
-			default:
-				say(fmt.Sprintf("%s: http://%s.localhost", c.Name, c.HTTP.Subdomain))
-			}
-		}
 		for _, a := range c.Asks {
 			if a.Keep {
 				keep = append(keep, a.Var)
 			}
 		}
 	}
+	say("")
+	say(contract.Text(m, e, on))
 	if len(keep) > 0 {
+		say("")
 		say("copy these lines of .env somewhere off this machine; they cannot be regenerated: " + strings.Join(keep, ", "))
 	}
 }

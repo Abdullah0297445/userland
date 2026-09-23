@@ -74,7 +74,8 @@ Postgres and it may sit behind traefik; userland never runs it.
 _Avoid_: tenant, client, app, application
 
 **Contract**:
-Everything a consumer needs to use userland, and nothing about how userland runs.
+A short summary of what is on and how to reach each part of it, to glance at while starting
+a consumer. Nothing depends on it.
 _Avoid_: hand-off, handshake, connection details, exports, integration
 
 ## The interview
@@ -181,8 +182,8 @@ connection for as long as the container holds its own, so a container on this do
 release promptly.
 
 **DSN**:
-The connection string userland hands a consumer, or writes for a container. It is part of
-the contract, and it names a door.
+The connection string userland hands a consumer, or writes for a container. It names a
+door.
 _Avoid_: connection URL, database URL, credentials
 
 **Archive**:
