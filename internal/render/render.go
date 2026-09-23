@@ -151,7 +151,9 @@ func Render(in Input) ([]byte, error) {
 		}
 		var ports []string
 		for _, p := range c.Ports {
-			ports = append(ports, fmt.Sprintf(`"%d:%d"`, p, p))
+			if p.Applies(in.Visibility, in.Env.Get) {
+				ports = append(ports, fmt.Sprintf(`"%d:%d"`, p.Port, p.Port))
+			}
 		}
 		if c.HTTP != nil {
 			portVar := PortVar(c.Name)

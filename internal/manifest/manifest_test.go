@@ -61,6 +61,7 @@ func TestLoadRefusesBadAsks(t *testing.T) {
 		"clickhouse bad password": `{"products": {"p": {"containers": {"c": {"clickhouse": {"database": "c", "password": "c_pw"}}}}}}`,
 		"clickhouse settings":     `{"products": {"p": {"containers": {"c": {"clickhouse": {"database": "c", "password": "C_PW", "settings": {"x": "1"}}}}}}}`,
 		"one variable two stores": `{"products": {"p": {"containers": {"c": {"postgres": {"database": "c", "password": "C_PW"}, "clickhouse": {"database": "c", "password": "C_PW"}}}}}}`,
+		"bad port when":           `{"products": {"p": {"containers": {"c": {"ports": [{"port": 443, "when": "sometimes"}]}}}}}`,
 	}
 	for name, body := range cases {
 		if _, err := load(t, body); err == nil || !strings.HasPrefix(err.Error(), "manifest.json: ") {

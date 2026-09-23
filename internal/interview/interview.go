@@ -98,7 +98,7 @@ func Run(m *manifest.Manifest, e *env.File, out io.Writer) (*Result, error) {
 
 func SelectVisibility() (string, error) {
 	return selectOne("Visibility", "Chosen once, for the whole of userland.", []option{
-		{label: "local: this machine only, on *.localhost, with no domain and no certificate", value: "local"},
+		{label: "local: *.localhost names, with no domain and no certificate; anyone on your network can reach it", value: "local"},
 		{label: "public: real hostnames under your domain, with TLS from a DNS-01 challenge", value: "public"},
 	})
 }

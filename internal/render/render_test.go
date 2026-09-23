@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Abdullah0297445/userland/internal/env"
 	"github.com/Abdullah0297445/userland/internal/manifest"
 )
 
@@ -70,6 +71,30 @@ func TestAHelperTemplateIsIncludedAndIsNoContainer(t *testing.T) {
 	want := "image: x\nenvironment:\n  " + MergeLine + "\n  SHARED: app\n  OWN: yes"
 	if body != want {
 		t.Fatalf("body:\n%s", body)
+	}
+}
+
+func TestAPortIsPublishedOnlyWhereItsWhenHolds(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "compose"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	template := "{{ define \"proxy\" -}}\nimage: x\nenvironment:\n  " + MergeLine + "\n{{ end }}\n"
+	if err := os.WriteFile(filepath.Join(root, "compose", "proxy.yml"), []byte(template), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m, err := manifest.Parse([]byte(`{"products": {"proxy": {"containers": {"proxy": {"ports": [{"port": 80}, {"port": 443, "when": "public"}]}}}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for visibility, want := range map[string]bool{"local": false, "public": true} {
+		out, err := Render(Input{Manifest: m, On: []string{"proxy"}, Visibility: visibility, Env: env.New(""), Root: root})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(out), `- "80:80"`) || strings.Contains(string(out), `- "443:443"`) != want {
+			t.Fatalf("%s:\n%s", visibility, out)
+		}
 	}
 }
 

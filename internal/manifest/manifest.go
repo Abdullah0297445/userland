@@ -26,7 +26,7 @@ type Container struct {
 	HTTP       *HTTP                `json:"http"`
 	Postgres   *Database            `json:"postgres"`
 	ClickHouse *Database            `json:"clickhouse"`
-	Ports      []int                `json:"ports"`
+	Ports      []Published          `json:"ports"`
 	Volumes    []string             `json:"volumes"`
 	Files      string               `json:"files"`
 	Asks       []Ask                `json:"asks"`
@@ -39,6 +39,11 @@ type HTTP struct {
 	Container int    `json:"container"`
 	Host      int    `json:"host"`
 	Subdomain string `json:"subdomain"`
+}
+
+type Published struct {
+	Port int    `json:"port"`
+	When string `json:"when"`
 }
 
 type Database struct {
@@ -89,14 +94,26 @@ func ValidName(s string) bool { return namePattern.MatchString(s) }
 func ValidSetting(s string) bool { return settingPattern.MatchString(s) }
 
 func (a Ask) Applies(visibility string, value func(string) string) bool {
-	switch a.When {
+	return applies(a.When, visibility, value)
+}
+
+func (p Published) Applies(visibility string, value func(string) string) bool {
+	return applies(p.When, visibility, value)
+}
+
+func applies(when, visibility string, value func(string) string) bool {
+	switch when {
 	case "":
 		return true
 	case "public", "local":
-		return a.When == visibility
+		return when == visibility
 	}
-	name, want, _ := strings.Cut(a.When, "=")
+	name, want, _ := strings.Cut(when, "=")
 	return value(name) == want
+}
+
+func validWhen(when string) bool {
+	return when == "" || when == "public" || when == "local" || strings.Contains(when, "=")
 }
 
 func (a Ask) Hidden() bool {
@@ -172,6 +189,11 @@ func Parse(raw []byte) (*Manifest, error) {
 			if c.Files != "" && !ValidVariable(c.Files) {
 				return nil, fmt.Errorf("manifest.json: %s keeps the paths named by %q, which is not a variable name", name, c.Files)
 			}
+			for _, p := range c.Ports {
+				if !validWhen(p.When) {
+					return nil, fmt.Errorf("manifest.json: %s publishes port %d when %q, which is not public, local or VAR=value", name, p.Port, p.When)
+				}
+			}
 			if err := c.checkAsks(); err != nil {
 				return nil, err
 			}
@@ -246,7 +268,7 @@ func (c *Container) checkAsks() error {
 		if a.Type == Choice && len(a.Options) == 0 {
 			return fmt.Errorf("manifest.json: %s asks %s as a choice with no options", c.Name, a.Var)
 		}
-		if a.When != "" && a.When != "public" && a.When != "local" && !strings.Contains(a.When, "=") {
+		if !validWhen(a.When) {
 			return fmt.Errorf("manifest.json: %s asks %s when %q, which is not public, local or VAR=value", c.Name, a.Var, a.When)
 		}
 	}
