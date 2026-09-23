@@ -355,8 +355,13 @@ the whole host, with a database per product and per consumer, each owned by a us
 same name. `pgbouncer-transaction` and `pgbouncer-session` are the two doors, under *For a
 consumer*. `pgadmin` is the browser UI. Every database is archived by fort, under *fort*.
 
-**pgadmin and fort bypass both doors**: each names `postgres-18:5432` directly. `pg_dump`
-through a transaction pooler fails, and pgadmin keeps session state on its connections.
+**Nothing reaches Postgres but through a door, except fort and pgadmin**, which name
+`postgres-18:5432` directly. fort does, so that it keeps every database whichever door is
+on. pgadmin does because its Query Tool's stop button cancels by the process id its
+connection was handed at the start, and through a door that id is the door's own, so the
+button reports the query complete while it runs on. Provisioning
+connects to nothing: it runs `psql` inside `postgres-18` with `docker exec`, and it has to,
+since the doors look every password up through a user that provisioning makes.
 
 ### pgadmin
 
@@ -485,7 +490,7 @@ restore from that dump.
 
 **Two things only you can enforce.** A Postgres Trigger node holds its own credential and uses
 `LISTEN`, which the transaction door drops silently: point that credential at
-`pgbouncer-session:5432`, or at `postgres-18:5432` directly, never at the door n8n itself uses.
+`pgbouncer-session:5432`, never at the door n8n itself uses.
 And `N8N_PORT` in `.env` is userland's loopback-port variable, as for every HTTP container;
 n8n never sees it and always listens on 5678 inside its container.
 
@@ -509,8 +514,8 @@ Metabase's Admin is reached by a connection Metabase makes with the host and por
 there, and nothing in `.env` reaches it. Metabase's Postgres driver sends `SET SESSION
 TIMEZONE` before a query when a report timezone is set, and `SET ROLE` when impersonation is
 on, and the transaction door discards both. Point a data source that uses either at
-`pgbouncer-session:5432`, or at `postgres-18:5432` directly; one that uses neither may take
-the transaction door like anything else.
+`pgbouncer-session:5432`; one that uses neither may take the transaction door like anything
+else.
 
 **`MB_ENCRYPTION_SECRET_KEY` is a one-way door.** It encrypts the secret columns of Metabase's
 database, the data-source credentials above all; without it they sit in clear in the database
@@ -961,7 +966,8 @@ since provisioning makes those. `--session` prints a DSN that names the session 
 instead. `--api` adds the PostgREST recipe inside the database, an `api` schema owned by the
 consumer, an authenticator user that holds no table rights and inherits none, an anonymous
 user that cannot log in, and an event trigger that tells PostgREST to reload its schema cache
-after a migration, and prints a second DSN for PostgREST that names `postgres-18` directly.
+after a migration, and prints a second DSN for PostgREST that names `pgbouncer-session`,
+whichever door the first names, because PostgREST hears that reload on a `LISTEN`.
 
 `./bootstrap postgres database remove NAME` drops the database and every user the recipe
 made, after naming them and asking. Neither ClickHouse nor a Redis has an address in the

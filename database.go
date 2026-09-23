@@ -89,24 +89,30 @@ func addDatabase(m *manifest.Manifest, e *env.File, name string, session, api bo
 	}
 	if api {
 		say("")
-		say("  For PostgREST, direct to Postgres and never through a door. Paste into the same .env:")
+		say("  For PostgREST, through the session door. Paste into the same .env:")
 		say("")
-		say("    PGRST_DB_URI=" + contract.DSN(c.Authenticator, c.APIPassword, manifest.Postgres, name))
+		say("    PGRST_DB_URI=" + contract.DSN(c.Authenticator, c.APIPassword, manifest.SessionDoor, name))
 		say("    PGRST_DB_SCHEMAS=" + provision.APISchema)
 		say("    PGRST_DB_ANON_ROLE=" + c.Anon)
 		say("")
 		say(fmt.Sprintf("  Installed in %s: the schema %s, owned by %s; the user %s, which holds no table rights and inherits none;", name, provision.APISchema, name, c.Authenticator))
 		say(fmt.Sprintf("  the user %s, which cannot log in; and an event trigger that tells PostgREST to reload its schema cache after a migration.", c.Anon))
 		say("")
-		say(fmt.Sprintf("  The two DSNs are not interchangeable. DATABASE_URL names a door; PGRST_DB_URI names %s. Through the transaction", manifest.Postgres))
-		say("  door PostgREST's LISTEN reload breaks silently while every health check passes, so before you paste PGRST_DB_URI,")
-		say(fmt.Sprintf("  check that it holds _authenticator and @%s.", manifest.Postgres))
+		say(fmt.Sprintf("  The two DSNs are not interchangeable. PGRST_DB_URI names %s whichever door DATABASE_URL names: PostgREST", manifest.SessionDoor))
+		say("  reloads its schema cache on a LISTEN, which the transaction door drops silently while every health check passes,")
+		say(fmt.Sprintf("  so before you paste PGRST_DB_URI, check that it holds _authenticator and @%s.", manifest.SessionDoor))
 	}
 	say("")
 	say(fmt.Sprintf("  To reach it, the consumer's compose file declares %s external and joins it.", render.Network(m.Container(door).Product)))
-	if !contains(on, door) {
-		say("")
-		say(fmt.Sprintf("warning: %s is off, and the DSN names it; switch it on before the consumer starts", door))
+	named := []string{door}
+	if api && door != manifest.SessionDoor {
+		named = append(named, manifest.SessionDoor)
+	}
+	for _, d := range named {
+		if !contains(on, d) {
+			say("")
+			say(fmt.Sprintf("warning: %s is off, and a DSN names it; switch it on before the consumer starts", d))
+		}
 	}
 	return nil
 }
