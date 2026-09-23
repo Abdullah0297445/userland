@@ -3,7 +3,7 @@
     "traefik": {
       "containers": {
         "traefik": {
-          "ports": [80, 443],
+          "ports": [{"port": 80}, {"port": 443, "when": "public"}],
           "volumes": ["traefik_acme"],
           "asks": [
             {"var": "DOMAIN", "type": "hostname", "prompt": "Domain every hostname sits under", "when": "public"},

@@ -59,12 +59,15 @@ so a database is backed up from the day it exists.
 ## Two visibilities
 
 **local** — plain HTTP on `*.localhost`. No DNS record, no certificate, no domain to buy.
-This is how you find out whether you want it.
+This is how you find out whether you want it. Only this machine resolves those names, but
+traefik listens on every interface, so anyone on a network you share who sends the name
+reaches what is on.
 
 **public** — real hostnames, with TLS issued over a DNS-01 challenge.
 
 They are one variable apart, and both go through traefik. Without traefik, each container
-answers on this machine only, at a loopback port of its own.
+answers on this machine only, at a loopback port of its own. That holds on Docker Engine 28.0
+or later; before it, a neighbour on the same network can reach a loopback port too.
 
 ## Running it
 
@@ -328,10 +331,11 @@ read that one parameter, and nothing it holds writes.
 
 ## traefik
 
-traefik is the one container that publishes on every interface, on ports 80 and 443. Every
-HTTP container is reached through it by the labels the generator writes from the manifest,
-and none holds a certificate or a redirect of its own: in public visibility the `web`
-entrypoint sends every plain-HTTP request to `websecure` before any router is matched.
+traefik is the one container that publishes on every interface: port 80, and 443 in public
+visibility, where the `websecure` entrypoint listens. Every HTTP container is reached through
+it by the labels the generator writes from the manifest, and none holds a certificate or a
+redirect of its own: in public visibility the `web` entrypoint sends every plain-HTTP request
+to `websecure` before any router is matched.
 
 **Certificates come over a DNS-01 challenge**, from Let's Encrypt, through the provider
 `DNS_PROVIDER` names. A certificate can therefore be issued before the hostname has a public
@@ -1022,7 +1026,7 @@ is missing as you fill them in.
 | `http` | `container` port, `host` loopback port, and `subdomain` (defaults to the name). Drives the traefik labels and the `ports` block. |
 | `postgres` | The `database` this container gets on Postgres, which is also its user's name, and the `.env` variable holding its `password`. Two containers naming one database share it, and must name the same `settings`. It implies `postgres-18` is on. Optional `settings`, as `{"statement_timeout": "5min"}`, are Postgres settings provisioning puts on the user with `ALTER ROLE … SET`, so they reach every connection regardless of the door. |
 | `clickhouse` | The `database` this container gets on ClickHouse, also its user's name, and the `.env` variable holding its `password`; a different variable from the Postgres one. Two containers naming one database share it. It implies `clickhouse` is on. No `settings`. |
-| `ports` | Ports published on every interface. traefik alone. |
+| `ports` | Ports published on every interface, each `{"port": 443}` with an optional `when` like an ask's. traefik alone. |
 | `volumes` | Named volumes this container mounts. The top-level `volumes` block, "left behind" and `reclaim` all read this. A container may also mount a volume declared on one it depends on, as fort mounts ClickHouse's `clickhouse_backups`; the volume stays the declaring container's. |
 | `asks` | `var`, `type`, `prompt`, optional `when` (`public`, `local` or `VAR=value`) and `keep`. Types: `text hostname email url port secret generated hex choice paths`, described under *The interview*. |
 | `external` | `{"PREFIX": {"kind": "bucket"}}`, or `{"kind": "secret-store"}`. A bucket takes `"versioned": true`, `"never_expire": true`, and `"delete"` as `"*"` for any object or a prefix like `"locks/*"` for objects under it; left out, the key may never delete. The kind supplies five variables under the prefix, and the interview asks them with the offer and the checklist, under *Object store* and *Secret store*. Two containers naming one prefix share it and must describe it alike. |

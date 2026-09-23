@@ -63,9 +63,10 @@ langfuse-web, and cannot be switched off while it is.
 _Avoid_: dependents, upstream of, parent
 
 **Visibility**:
-Whether userland can be reached from the machine that runs it alone, or from the internet.
-It is **local** (no domain, no certificate, this machine only) or **public** (real
-hostnames, TLS), chosen once for the whole of userland and never per container.
+Whether userland answers to names only this machine resolves, or to real hostnames on the
+internet. It is **local** (`*.localhost`, no domain, no certificate; reachable by anyone on a
+network it shares who sends the name) or **public** (real hostnames, TLS), chosen once for the
+whole of userland and never per container.
 _Avoid_: mode, environment, stage, dev/prod, exposure
 
 **Consumer**:
