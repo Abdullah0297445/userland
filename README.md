@@ -90,7 +90,7 @@ interview never asks again for what is already there.
 | `./bootstrap off CONTAINER…` | Switch containers off, then apply. Refuses while a container is blocking another, naming the dependents. Prints what it left behind and offers to reclaim it; answering nothing keeps it. |
 | `./bootstrap set VAR` | Ask one variable again, then apply. `set VISIBILITY` switches visibility and then asks whatever the new one needs. Only asked variables: an optional one is a line you add by hand. |
 | `./bootstrap reclaim CONTAINER…` | Drop the volume and the database a switched-off container left, after naming them and asking. |
-| `./bootstrap contract` | Print the Contract: what a consumer needs to use userland. |
+| `./bootstrap contract` | Print the Contract: what is on, and how to reach it. |
 | `./bootstrap postgres database add NAME` | Make a consumer's database and user, and print the DSN once. `--session` names the session door; `--api` adds the PostgREST recipe. |
 | `./bootstrap postgres database remove NAME` | Drop a consumer's database and its users, after asking. |
 | `./bootstrap apply` | Render, bring up, provision, print. |
@@ -115,8 +115,8 @@ first and defaults to no.
 4. Brings up everything else with `--remove-orphans` and `--build`. A container absent from
    the file is an orphan, so switching it off is enough to remove it; its volume and its
    database stay. `--build` is for fort, the one image this repo builds.
-5. Prints the URL of everything that answers HTTP and the `.env` lines you must copy off
-   the machine because they cannot be regenerated.
+5. Prints the Contract, what is on and how to reach it (under *For a consumer*), and the
+   `.env` lines you must copy off the machine because they cannot be regenerated.
 6. If fort is on, backs up. Every apply ends with a backup, so a host is kept from the day
    fort is switched on, and a listed file that has gone missing or a database that will not
    dump fails the apply rather than being noticed a month later.
@@ -898,8 +898,19 @@ the last key to an archive. Delete those lines when you no longer need those arc
 ## For a consumer
 
 A **consumer** is a project of your own that uses userland and is not part of it. The
-Contract is everything it needs, and `./bootstrap contract` prints it for the visibility
-you are in:
+**Contract** is a short summary to glance at while you start one: every apply ends with it,
+and `./bootstrap contract` prints it again. It lists each container that is on, with an
+address where there is something to reach:
+
+```
+The Contract: what is on, and how to reach it.
+
+  metabase               http://metabase.localhost
+  pgbouncer-session      pgbouncer-session:5432 on userland_postgres
+  pgbouncer-transaction  pgbouncer-transaction:5432 on userland_postgres
+  postgres-18
+  traefik                network userland_traefik, entrypoint web, hosts NAME.localhost
+```
 
 - **Two networks**, `userland_postgres` and `userland_traefik`, which the consumer's compose
   file declares as `external: true` and joins.
@@ -910,27 +921,48 @@ you are in:
   long as the consumer holds its own, so the consumer must release connections promptly.
   The session door lends up to 100 connections per database, Postgres's own limit, so
   there Postgres decides and not the door; the transaction door lends pgbouncer's 20.
-  `pg_dump`, pgadmin and PostgREST bypass the doors and name `postgres-18:5432` directly.
-- **traefik's labels**: the rule (`NAME.localhost`, or `NAME.DOMAIN` in public), the
-  entrypoint (`web`, or `websecure` in public with the certificate resolver `letsencrypt`),
-  the port, and `traefik.docker.network=userland_traefik`.
+- **traefik** routes a consumer by the labels on its container. `NAME` and `PORT` are the
+  consumer's own. In local visibility:
+
+  ```yaml
+  labels:
+    - traefik.enable=true
+    - traefik.http.routers.NAME.rule=Host(`NAME.localhost`)
+    - traefik.http.routers.NAME.entrypoints=web
+    - traefik.http.services.NAME.loadbalancer.server.port=PORT
+    - traefik.docker.network=userland_traefik
+  ```
+
+  In public, the rule names your domain, the entrypoint is `websecure`, and one more label
+  names the certificate resolver. `web` redirects to `websecure` on its own, so one router
+  is enough:
+
+  ```yaml
+  labels:
+    - traefik.enable=true
+    - traefik.http.routers.NAME.rule=Host(`NAME.example.com`)
+    - traefik.http.routers.NAME.entrypoints=websecure
+    - traefik.http.routers.NAME.tls.certresolver=letsencrypt
+    - traefik.http.services.NAME.loadbalancer.server.port=PORT
+    - traefik.docker.network=userland_traefik
+  ```
 
 `./bootstrap postgres database add NAME` makes the consumer's database and a user of the same
 name that owns it, with `CONNECT` revoked from everyone else, `CREATE` on `public` revoked,
-and the `vector` extension installed, then prints the DSN once, followed by the Contract.
-userland keeps no copy of that password you can read back: paste it into the consumer's own
-gitignored `.env`, and keep the record where you keep such things. A name that exists stops
-the verb rather than overwriting, and a product's database is refused, since provisioning
-makes those. `--session` prints a DSN that names the session door instead. `--api` adds the
-PostgREST recipe inside the database, an `api` schema owned by the consumer, an
-authenticator user that holds no table rights and inherits none, an anonymous user that
-cannot log in, and an event trigger that tells PostgREST to reload its schema cache after a
-migration, and prints a second DSN for PostgREST that names `postgres-18` directly.
+and the `vector` extension installed, then prints the DSN once and the network the consumer
+joins to reach it. userland keeps no copy of that password you can read back: paste it into
+the consumer's own gitignored `.env`, and keep the record where you keep such things. A name
+that exists stops the verb rather than overwriting, and a product's database is refused,
+since provisioning makes those. `--session` prints a DSN that names the session door
+instead. `--api` adds the PostgREST recipe inside the database, an `api` schema owned by the
+consumer, an authenticator user that holds no table rights and inherits none, an anonymous
+user that cannot log in, and an event trigger that tells PostgREST to reload its schema cache
+after a migration, and prints a second DSN for PostgREST that names `postgres-18` directly.
 
 `./bootstrap postgres database remove NAME` drops the database and every user the recipe
-made, after naming them and asking. ClickHouse stays out of the Contract until a consumer
-needs it. Redis never enters it: a product that needs Redis runs its own, and so does a
-consumer.
+made, after naming them and asking. Neither ClickHouse nor a Redis has an address in the
+Contract: ClickHouse until a consumer needs one, and Redis never, since a product that needs
+Redis runs its own, and so does a consumer.
 
 ## check
 
@@ -968,7 +1000,6 @@ property its kind has no use for.
 | `ssmget/` | That reader, a Go module of its own so the CLI never takes a cloud SDK as a dependency. |
 | `initdb/` | First-start initialisation for a datastore. Runs once, against an empty volume, and never again. Empty today: what used to live here is provisioned instead. |
 | `config/` | Configuration files a container mounts, checked in because they hold nothing secret. pgadmin's one server is the first. |
-| `consumer/` | Files you copy into a project of your own. userland never runs them. |
 | `main.go`, `internal/` | The CLI, in Go, on the standard library plus [huh](https://github.com/charmbracelet/huh) for the prompts and [cobra](https://github.com/spf13/cobra) for the verbs. |
 
 `compose.yml`, `.env` and the `userland` binary are yours and untracked. Support
