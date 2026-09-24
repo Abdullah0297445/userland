@@ -169,7 +169,8 @@ func Ask(a manifest.Ask) (string, error) {
 		}
 		return Generate(), nil
 	default:
-		return input(title, a.Hidden(), Shape(a.Type))
+		value, err := input(title, a.Hidden(), Shape(a.Type))
+		return Clean(a.Type, value), err
 	}
 }
 

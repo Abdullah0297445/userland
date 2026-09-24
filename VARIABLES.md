@@ -34,7 +34,7 @@ An asked variable is collected by the interview when its container is switched o
 | `FORT_KEY_SECRET_ACCESS_KEY` | secret-store | always |  | Its secret. |
 | `FORT_S3_BUCKET` | bucket, versioned, delete under locks/, never expire | always |  | Name of the bucket. Enter to generate `userland-fort-s3-<8 hex>`, or type one you made. |
 | `FORT_S3_REGION` | bucket, versioned, delete under locks/, never expire | always |  | Region of the bucket, as the provider names it; `auto` on Cloudflare R2. |
-| `FORT_S3_ENDPOINT` | bucket, versioned, delete under locks/, never expire | always |  | URL the bucket is reached at. The offer writes `https://s3.<region>.amazonaws.com`. |
+| `FORT_S3_ENDPOINT` | bucket, versioned, delete under locks/, never expire | always |  | Scheme and host the bucket is reached at, with no path; a trailing `/` is dropped as you enter it. The offer writes `https://s3.<region>.amazonaws.com`. |
 | `FORT_S3_ACCESS_KEY_ID` | bucket, versioned, delete under locks/, never expire | always |  | Access key that reaches this bucket and nothing else. It may list the bucket and get and put objects, and delete under `locks/` and nowhere else. |
 | `FORT_S3_SECRET_ACCESS_KEY` | bucket, versioned, delete under locks/, never expire | always |  | Its secret. |
 | `FORT_MEM_LIMIT` | optional |  |  | Memory limit in compose's units, such as `2g`. Unbounded unless set. |
@@ -63,7 +63,7 @@ An asked variable is collected by the interview when its container is switched o
 | `LANGFUSE_CLICKHOUSE_PASSWORD` | generated | always |  | Password of the `langfuse` user on ClickHouse, which reaches the `langfuse` database and nothing else. Provisioning converges it to whatever this holds. |
 | `LANGFUSE_S3_BUCKET` | bucket, delete | always |  | Name of the bucket. Enter to generate `userland-langfuse-s3-<8 hex>`, or type one you made. |
 | `LANGFUSE_S3_REGION` | bucket, delete | always |  | Region of the bucket, as the provider names it; `auto` on Cloudflare R2. |
-| `LANGFUSE_S3_ENDPOINT` | bucket, delete | always |  | URL the bucket is reached at. The offer writes `https://s3.<region>.amazonaws.com`. |
+| `LANGFUSE_S3_ENDPOINT` | bucket, delete | always |  | Scheme and host the bucket is reached at, with no path; a trailing `/` is dropped as you enter it. The offer writes `https://s3.<region>.amazonaws.com`. |
 | `LANGFUSE_S3_ACCESS_KEY_ID` | bucket, delete | always |  | Access key that reaches this bucket and nothing else. It may list the bucket and get, put and delete objects. |
 | `LANGFUSE_S3_SECRET_ACCESS_KEY` | bucket, delete | always |  | Its secret. |
 | `LANGFUSE_WEB_PORT` | optional |  |  | Loopback port to publish on while traefik is on; nothing is published unless it is set. With traefik off the container publishes on `127.0.0.1:3001` regardless. |
@@ -78,7 +78,7 @@ An asked variable is collected by the interview when its container is switched o
 | `LANGFUSE_CLICKHOUSE_PASSWORD` | generated | always |  | Password of the `langfuse` user on ClickHouse, which reaches the `langfuse` database and nothing else. Provisioning converges it to whatever this holds. |
 | `LANGFUSE_S3_BUCKET` | bucket, delete | always |  | Name of the bucket. Enter to generate `userland-langfuse-s3-<8 hex>`, or type one you made. |
 | `LANGFUSE_S3_REGION` | bucket, delete | always |  | Region of the bucket, as the provider names it; `auto` on Cloudflare R2. |
-| `LANGFUSE_S3_ENDPOINT` | bucket, delete | always |  | URL the bucket is reached at. The offer writes `https://s3.<region>.amazonaws.com`. |
+| `LANGFUSE_S3_ENDPOINT` | bucket, delete | always |  | Scheme and host the bucket is reached at, with no path; a trailing `/` is dropped as you enter it. The offer writes `https://s3.<region>.amazonaws.com`. |
 | `LANGFUSE_S3_ACCESS_KEY_ID` | bucket, delete | always |  | Access key that reaches this bucket and nothing else. It may list the bucket and get, put and delete objects. |
 | `LANGFUSE_S3_SECRET_ACCESS_KEY` | bucket, delete | always |  | Its secret. |
 | `LANGFUSE_WORKER_MEM_LIMIT` | optional |  |  | Memory limit in compose's units, such as `2g`. Unbounded unless set. |
@@ -179,7 +179,7 @@ An asked variable is collected by the interview when its container is switched o
 | `TWENTY_DB_PASSWORD` | generated | always |  | Password of the `twenty` user on Postgres, which owns the `twenty` database. Provisioning converges it to whatever this holds. |
 | `TWENTY_S3_BUCKET` | bucket, delete | always |  | Name of the bucket. Enter to generate `userland-twenty-s3-<8 hex>`, or type one you made. |
 | `TWENTY_S3_REGION` | bucket, delete | always |  | Region of the bucket, as the provider names it; `auto` on Cloudflare R2. |
-| `TWENTY_S3_ENDPOINT` | bucket, delete | always |  | URL the bucket is reached at. The offer writes `https://s3.<region>.amazonaws.com`. |
+| `TWENTY_S3_ENDPOINT` | bucket, delete | always |  | Scheme and host the bucket is reached at, with no path; a trailing `/` is dropped as you enter it. The offer writes `https://s3.<region>.amazonaws.com`. |
 | `TWENTY_S3_ACCESS_KEY_ID` | bucket, delete | always |  | Access key that reaches this bucket and nothing else. It may list the bucket and get, put and delete objects. |
 | `TWENTY_S3_SECRET_ACCESS_KEY` | bucket, delete | always |  | Its secret. |
 | `TWENTY_SERVER_PORT` | optional |  |  | Loopback port to publish on while traefik is on; nothing is published unless it is set. With traefik off the container publishes on `127.0.0.1:3002` regardless. |
@@ -192,7 +192,7 @@ An asked variable is collected by the interview when its container is switched o
 | `TWENTY_DB_PASSWORD` | generated | always |  | Password of the `twenty` user on Postgres, which owns the `twenty` database. Provisioning converges it to whatever this holds. |
 | `TWENTY_S3_BUCKET` | bucket, delete | always |  | Name of the bucket. Enter to generate `userland-twenty-s3-<8 hex>`, or type one you made. |
 | `TWENTY_S3_REGION` | bucket, delete | always |  | Region of the bucket, as the provider names it; `auto` on Cloudflare R2. |
-| `TWENTY_S3_ENDPOINT` | bucket, delete | always |  | URL the bucket is reached at. The offer writes `https://s3.<region>.amazonaws.com`. |
+| `TWENTY_S3_ENDPOINT` | bucket, delete | always |  | Scheme and host the bucket is reached at, with no path; a trailing `/` is dropped as you enter it. The offer writes `https://s3.<region>.amazonaws.com`. |
 | `TWENTY_S3_ACCESS_KEY_ID` | bucket, delete | always |  | Access key that reaches this bucket and nothing else. It may list the bucket and get, put and delete objects. |
 | `TWENTY_S3_SECRET_ACCESS_KEY` | bucket, delete | always |  | Its secret. |
 | `TWENTY_WORKER_MEM_LIMIT` | optional |  |  | Memory limit in compose's units, such as `2g`. Unbounded unless set. |

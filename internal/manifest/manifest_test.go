@@ -195,7 +195,7 @@ func TestExternalKindsLoadAndSupplyTheirVariables(t *testing.T) {
 	}
 	want := []string{
 		"FORT_KEY_PROVIDER:choice", "FORT_KEY_NAME:parameter-name", "FORT_KEY_REGION:text", "FORT_KEY_ACCESS_KEY_ID:secret", "FORT_KEY_SECRET_ACCESS_KEY:secret",
-		"FORT_S3_BUCKET:bucket-name", "FORT_S3_REGION:text", "FORT_S3_ENDPOINT:url", "FORT_S3_ACCESS_KEY_ID:secret", "FORT_S3_SECRET_ACCESS_KEY:secret",
+		"FORT_S3_BUCKET:bucket-name", "FORT_S3_REGION:text", "FORT_S3_ENDPOINT:bucket-endpoint", "FORT_S3_ACCESS_KEY_ID:secret", "FORT_S3_SECRET_ACCESS_KEY:secret",
 	}
 	if !reflect.DeepEqual(vars, want) {
 		t.Fatalf("asks %v", vars)
