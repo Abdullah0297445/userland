@@ -142,12 +142,14 @@ func TestLabelNamesWhoNeedsIt(t *testing.T) {
 
 func TestBucketAndParameterNameShapes(t *testing.T) {
 	ok := map[string][]string{
-		manifest.BucketName:    {"userland-fort-s3-0a1b2c3d", "abc", "a.b-c", "a1b2"},
-		manifest.ParameterName: {"/userland/fort-key-0a1b2c3d", "userland/fort-key", "plain_name", "/a/b/c.d"},
+		manifest.BucketName:     {"userland-fort-s3-0a1b2c3d", "abc", "a.b-c", "a1b2"},
+		manifest.ParameterName:  {"/userland/fort-key-0a1b2c3d", "userland/fort-key", "plain_name", "/a/b/c.d"},
+		manifest.BucketEndpoint: {"https://s3.example.com", "https://s3.example.com/", "http://127.0.0.1:9000", "http://[::1]:9000/"},
 	}
 	bad := map[string][]string{
-		manifest.BucketName:    {"", "ab", "Upper", "-starts", "ends-", "a..b", "192.168.0.1", "has_underscore", "with space"},
-		manifest.ParameterName: {"", "/aws/x", "ssm-key", "/AWS/x", "a//b", "/", "with space", "has$dollar"},
+		manifest.BucketName:     {"", "ab", "Upper", "-starts", "ends-", "a..b", "192.168.0.1", "has_underscore", "with space"},
+		manifest.ParameterName:  {"", "/aws/x", "ssm-key", "/AWS/x", "a//b", "/", "with space", "has$dollar"},
+		manifest.BucketEndpoint: {"", "s3.example.com", "https://", "https://s3.example.com/bucket", "https://s3.example.com//", "ftp://s3.example.com", "HTTPS://s3.example.com", "https://s3.example.com?x=1", "https://s3.example.com#x", "https://user@s3.example.com"},
 	}
 	for kind, values := range ok {
 		for _, v := range values {
@@ -161,6 +163,22 @@ func TestBucketAndParameterNameShapes(t *testing.T) {
 			if err := Shape(kind)(v); err == nil {
 				t.Errorf("%s %q: accepted", kind, v)
 			}
+		}
+	}
+}
+
+func TestCleanDropsAnEndpointsTrailingSlashAndNothingElse(t *testing.T) {
+	for _, c := range []struct{ kind, in, want string }{
+		{manifest.BucketEndpoint, "https://s3.example.com/", "https://s3.example.com"},
+		{manifest.BucketEndpoint, "https://s3.example.com", "https://s3.example.com"},
+		{manifest.BucketEndpoint, "http://127.0.0.1:9000/", "http://127.0.0.1:9000"},
+		{manifest.URL, "https://example.com/", "https://example.com/"},
+		{manifest.URL, "http://127.0.0.1:9000/path/", "http://127.0.0.1:9000/path/"},
+		{manifest.Text, "ends/", "ends/"},
+		{manifest.Paths, "/srv/app/", "/srv/app/"},
+	} {
+		if got := Clean(c.kind, c.in); got != c.want {
+			t.Errorf("Clean(%s, %q) = %q, want %q", c.kind, c.in, got, c.want)
 		}
 	}
 }

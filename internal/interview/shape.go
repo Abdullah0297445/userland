@@ -120,6 +120,20 @@ func Shape(kind string) func(string) error {
 			}
 			return nil
 		}
+	case manifest.BucketEndpoint:
+		return func(v string) error {
+			if err := present(v); err != nil {
+				return err
+			}
+			u, err := url.Parse(v)
+			if err != nil || !(strings.HasPrefix(v, "http://") || strings.HasPrefix(v, "https://")) || u.Host == "" {
+				return errors.New("not an endpoint: http:// or https:// and a host, like https://s3.example.com")
+			}
+			if strings.TrimSuffix(v, "/") != u.Scheme+"://"+u.Host {
+				return errors.New("an endpoint is only a scheme and a host, like https://s3.example.com, with no path; the bucket's name is asked on its own")
+			}
+			return nil
+		}
 	case manifest.ParameterName:
 		return func(v string) error {
 			if err := present(v); err != nil {
@@ -149,6 +163,13 @@ func Shape(kind string) func(string) error {
 	default:
 		return present
 	}
+}
+
+func Clean(kind, v string) string {
+	if kind == manifest.BucketEndpoint {
+		return strings.TrimSuffix(v, "/")
+	}
+	return v
 }
 
 func present(v string) error {

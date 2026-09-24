@@ -112,7 +112,7 @@ func externalMeaning(prefix string, x manifest.External, a manifest.Ask) string 
 		}
 		return "Region of the parameter."
 	case manifest.Endpoint:
-		return "URL the bucket is reached at. The offer writes `https://s3.<region>.amazonaws.com`."
+		return "Scheme and host the bucket is reached at, with no path; a trailing `/` is dropped as you enter it. The offer writes `https://s3.<region>.amazonaws.com`."
 	case manifest.AccessKeyID:
 		if x.Kind == manifest.Bucket {
 			rights := "list the bucket and get and put objects, and never delete"

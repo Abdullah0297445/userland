@@ -223,7 +223,9 @@ variables under that prefix: `_BUCKET`, `_REGION`, `_ENDPOINT`, `_ACCESS_KEY_ID`
 rest on AWS. Decline, the default, and it prints a checklist with your names in it and asks for
 the endpoint and the access key. A dependency whose five variables are in `.env` is never asked
 again, and two containers naming one prefix share the bucket. The region is text with no
-default, because `auto` is a real answer on Cloudflare R2.
+default, because `auto` is a real answer on Cloudflare R2. The endpoint is only a scheme and a
+host, with no path, because the bucket's name is asked on its own. A trailing `/` is dropped as
+you enter it.
 
 **The offer.** *Create it on AWS now?* Yes asks for an admin access key id, its secret and, if
 it has one, a session token, once per run. They go into the environment of

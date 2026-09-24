@@ -14,8 +14,9 @@ const (
 	NoDelete  = ""
 	DeleteAll = "*"
 
-	BucketName    = "bucket-name"
-	ParameterName = "parameter-name"
+	BucketName     = "bucket-name"
+	BucketEndpoint = "bucket-endpoint"
+	ParameterName  = "parameter-name"
 
 	Endpoint        = "ENDPOINT"
 	Name            = "BUCKET"
@@ -69,7 +70,7 @@ func (x External) Asks(prefix string) []Ask {
 		return []Ask{
 			{Var: v(Name), Type: BucketName, Prompt: "Name of the bucket"},
 			{Var: v(Region), Type: Text, Prompt: "Region of the bucket, as the provider names it"},
-			{Var: v(Endpoint), Type: URL, Prompt: "Endpoint URL the bucket is reached at"},
+			{Var: v(Endpoint), Type: BucketEndpoint, Prompt: "Endpoint URL the bucket is reached at"},
 			{Var: v(AccessKeyID), Type: Secret, Prompt: "Access key id that reaches this bucket and nothing else"},
 			{Var: v(SecretAccessKey), Type: Secret, Prompt: "Its secret"},
 		}
