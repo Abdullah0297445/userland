@@ -20,13 +20,14 @@ part() {
 }
 
 files() {
-	if [ -z "$FORT_FILES" ]; then
-		echo "fort: FORT_FILES is empty, so there is nothing to keep" >&2
+	if [ -z "$ARCHIVIST_FILES" ]; then
+		echo "archivist: ARCHIVIST_FILES is empty, so there is nothing to keep" >&2
 		return 1
 	fi
 	old=$IFS
 	IFS=:
-	set -- $FORT_FILES
+	# shellcheck disable=SC2086
+	set -- $ARCHIVIST_FILES
 	IFS=$old
 	for path in "$@"; do
 		shift
@@ -37,7 +38,7 @@ files() {
 
 postgres() {
 	databases=$(psql -d postgres -tAX -v ON_ERROR_STOP=1 -c "SELECT datname FROM pg_database WHERE datallowconn AND NOT datistemplate AND datname <> 'postgres' ORDER BY datname") || {
-		echo "fort: could not read the databases on $PGHOST, so none was kept" >&2
+		echo "archivist: could not read the databases on $PGHOST, so none was kept" >&2
 		return 1
 	}
 	failed=0
@@ -45,7 +46,7 @@ postgres() {
 	while IFS= read -r database; do
 		[ -n "$database" ] || continue
 		restic backup --tag postgres --stdin-filename "/postgres/$database.dump" --stdin-from-command -- pg_dump --format=custom --compress=0 "$database" </dev/null || {
-			echo "fort: $database on $PGHOST was not kept" >&2
+			echo "archivist: $database on $PGHOST was not kept" >&2
 			failed=1
 		}
 	done <<EOF
@@ -56,7 +57,7 @@ EOF
 
 clickhouse() {
 	databases=$(query "SELECT name FROM system.databases WHERE name NOT IN ('system', 'information_schema', 'INFORMATION_SCHEMA') ORDER BY name") || {
-		echo "fort: could not read the databases on $CLICKHOUSE_HOST, so none was kept" >&2
+		echo "archivist: could not read the databases on $CLICKHOUSE_HOST, so none was kept" >&2
 		return 1
 	}
 	rm -rf /clickhouse/*
@@ -65,7 +66,7 @@ clickhouse() {
 	while IFS= read -r database; do
 		[ -n "$database" ] || continue
 		query "BACKUP DATABASE \`$database\` TO File('$database')" >/dev/null || {
-			echo "fort: $database on $CLICKHOUSE_HOST was not kept" >&2
+			echo "archivist: $database on $CLICKHOUSE_HOST was not kept" >&2
 			failed=1
 		}
 	done <<EOF
@@ -83,9 +84,9 @@ query() {
 
 schedule() {
 	umask 077
-	export -p >/run/fort.env
-	printf '%s . /run/fort.env; /fort-entrypoint.sh backup\n' "${FORT_SCHEDULE:-@daily}" >/etc/crontabs/root
-	echo "fort: ${FORT_SCHEDULE:-@daily}, keeping ${FORT_FILES:-no file}${PGHOST:+, every database on $PGHOST}${CLICKHOUSE_HOST:+, every database on $CLICKHOUSE_HOST}"
+	export -p >/run/archivist.env
+	printf '%s . /run/archivist.env; /archivist-entrypoint.sh backup\n' "${ARCHIVIST_SCHEDULE:-@daily}" >/etc/crontabs/root
+	echo "archivist: ${ARCHIVIST_SCHEDULE:-@daily}, keeping ${ARCHIVIST_FILES:-no file}${PGHOST:+, every database on $PGHOST}${CLICKHOUSE_HOST:+, every database on $CLICKHOUSE_HOST}"
 	exec crond -f -L /dev/stdout
 }
 

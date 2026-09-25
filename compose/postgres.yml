@@ -1,86 +1,69 @@
-{{ define "postgres-18" -}}
-image: pgvector/pgvector:pg18-trixie
-environment:
-  <<: *userland-environment
-  POSTGRES_USER: postgres
-  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-volumes:
-  - postgres_data:/var/lib/postgresql
-  - ./initdb:/docker-entrypoint-initdb.d:ro
-healthcheck:
-  test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U postgres -d postgres"]
-  interval: 10s
-  timeout: 5s
-  retries: 5
-  start_period: 30s
-shm_size: 256m
-{{ end }}
+x-door: &door
+  image: edoburu/pgbouncer:v1.25.2-p0
+  restart: unless-stopped
+  depends_on:
+    postgres-18:
+      condition: service_healthy
+  networks:
+    - postgres
+    - postgres-server
+  healthcheck:
+    test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -p 5432"]
+    interval: 10s
+    timeout: 5s
+    retries: 5
 
-{{ define "pgbouncer-transaction" -}}
-image: edoburu/pgbouncer:v1.25.2-p0
-environment:
-  <<: *userland-environment
-  DATABASE_URL: postgres://pgbouncer_auth:${PGBOUNCER_AUTH_PASSWORD}@postgres-18:5432/
+x-door-environment: &door-environment
+  DATABASE_URL: postgres://pgbouncer_auth:${PGBOUNCER_AUTH_PASSWORD:?}@postgres-18:5432/
   AUTH_TYPE: scram-sha-256
   AUTH_USER: pgbouncer_auth
   AUTH_QUERY: SELECT * FROM public.pgbouncer_get_auth($$1)
   AUTH_DBNAME: postgres
-  POOL_MODE: transaction
   LISTEN_PORT: 5432
   MAX_CLIENT_CONN: 500
-healthcheck:
-  test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -p 5432"]
-  interval: 10s
-  timeout: 5s
-  retries: 5
-{{ end }}
 
-{{ define "pgbouncer-session" -}}
-image: edoburu/pgbouncer:v1.25.2-p0
-environment:
-  <<: *userland-environment
-  DATABASE_URL: postgres://pgbouncer_auth:${PGBOUNCER_AUTH_PASSWORD}@postgres-18:5432/
-  AUTH_TYPE: scram-sha-256
-  AUTH_USER: pgbouncer_auth
-  AUTH_QUERY: SELECT * FROM public.pgbouncer_get_auth($$1)
-  AUTH_DBNAME: postgres
-  POOL_MODE: session
-  LISTEN_PORT: 5432
-  MAX_CLIENT_CONN: 500
-  DEFAULT_POOL_SIZE: 100
-healthcheck:
-  test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -p 5432"]
-  interval: 10s
-  timeout: 5s
-  retries: 5
-{{ end }}
+services:
+  postgres-18:
+    image: pgvector/pgvector:pg18-trixie
+    container_name: postgres-18
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?}
+    networks:
+      - postgres-server
+    volumes:
+      - postgres_data:/var/lib/postgresql
+      - ./initdb:/docker-entrypoint-initdb.d:ro
+    shm_size: 256m
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U postgres -d postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    mem_limit: ${POSTGRES_18_MEM_LIMIT:-0}
 
-{{ define "pgadmin" -}}
-image: dpage/pgadmin4:latest
-environment:
-  <<: *userland-environment
-  PGADMIN_DEFAULT_EMAIL: ${PGADMIN_DEFAULT_EMAIL}
-  PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_DEFAULT_PASSWORD}
-  PGADMIN_LISTEN_PORT: 5050
-  PGADMIN_DISABLE_POSTFIX: 1
-  GUNICORN_ACCESS_LOGFILE: /dev/null
-{{- if .On "traefik" }}
-  PGADMIN_CONFIG_PROXY_X_FOR_COUNT: 1
-  PGADMIN_CONFIG_PROXY_X_PROTO_COUNT: 1
-  PGADMIN_CONFIG_PROXY_X_HOST_COUNT: 1
-  PGADMIN_CONFIG_PROXY_X_PORT_COUNT: 1
-  PGADMIN_CONFIG_PROXY_X_PREFIX_COUNT: 0
-{{- end }}
-{{- if eq .Visibility "public" }}
-  PGADMIN_CONFIG_SESSION_COOKIE_SECURE: "True"
-{{- end }}
+  pgbouncer-transaction:
+    <<: *door
+    container_name: pgbouncer-transaction
+    environment:
+      <<: *door-environment
+      POOL_MODE: transaction
+    mem_limit: ${PGBOUNCER_TRANSACTION_MEM_LIMIT:-0}
+
+  pgbouncer-session:
+    <<: *door
+    container_name: pgbouncer-session
+    environment:
+      <<: *door-environment
+      POOL_MODE: session
+      DEFAULT_POOL_SIZE: 100
+    mem_limit: ${PGBOUNCER_SESSION_MEM_LIMIT:-0}
+
+networks:
+  postgres: {}
+  postgres-server: {}
+
 volumes:
-  - pgadmin_data:/var/lib/pgadmin
-  - ./config/pgadmin-servers.json:/pgadmin4/servers.json:ro
-healthcheck:
-  test: ["CMD", "wget", "--quiet", "--output-document=-", "http://localhost:5050/misc/ping"]
-  interval: 30s
-  timeout: 10s
-  retries: 5
-  start_period: 60s
-{{ end }}
+  postgres_data: {}

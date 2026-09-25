@@ -1,256 +1,182 @@
 # userland
 
-One host, one compose project, and containers you switch on and off. Clone it, run one
-command, answer what it asks, and the host ends up running a reverse proxy, a set of
-shared datastores, and whichever applications you switched on — each behind TLS, each
-with its database already provisioned and already being backed up.
+One host, one compose project, and products you switch on and off. Clone it, write one
+`.env`, and run `docker compose up`. The host then runs a reverse proxy, a set of shared
+datastores, and whichever applications you switched on, each behind TLS.
 
 There is no application code here. userland is the ground your own projects stand on,
 and it is deliberately not one of them.
 
-> **This repo is being built in the open.** Today the interview writes `.env`, every verb
-> exists, and userland renders and runs traefik, the whole of Postgres — its doors and pgadmin —
-> ClickHouse, Metabase, n8n, Langfuse, Twenty, and fort, which backs all of it up. The other containers arrive one at a time. The design is published as issues on this repo as
-> it is settled.
+> **This repo is being built in the open.** userland now runs on docker compose alone. Every
+> product has its compose file. Nothing yet makes a product's database, the doors' auth user,
+> or a consumer's database: those come next, so a product that needs Postgres does not start
+> cleanly yet. The design is published as issues on this repo as it is settled.
 
 `userland` is the part of a running system that is not the kernel: everything the machine
 runs *for you*. This repo is that layer, for one host.
 
 ## What you can switch on
 
-| | |
-|---|---|
-| **The proxy** | traefik, terminating TLS for everything else. |
-| **The datastores** | One Postgres and one ClickHouse, shared: one of each for the whole host, never one per application. Postgres brings two doors and pgadmin. Redis is the exception: a product that needs it runs its own, inside the product, and nothing else is pointed at it. |
-| **The applications** | n8n, Metabase, Langfuse, Twenty, neo4j. |
-| **fort** | Keeps the files you name, `.env` first, and every database on Postgres and ClickHouse, in a bucket of its own as [restic](https://restic.net) snapshots, under a master key that never touches the host. |
+| Product | File | Containers |
+|---|---|---|
+| **traefik** | `compose.yml` | traefik. Always on. It terminates TLS for everything else. |
+| **postgres** | `compose/postgres.yml` | `postgres-18` and its two doors, `pgbouncer-transaction` and `pgbouncer-session`. |
+| **pgadmin** | `compose/pgadmin.yml` | pgadmin, the browser UI for Postgres. |
+| **clickhouse** | `compose/clickhouse.yml` | clickhouse. |
+| **metabase** | `compose/metabase.yml` | metabase. |
+| **n8n** | `compose/n8n.yml` | n8n and n8n-runners. |
+| **langfuse** | `compose/langfuse.yml` | langfuse-web, langfuse-worker and langfuse-redis. |
+| **twenty** | `compose/twenty.yml` | twenty-server, twenty-worker and twenty-redis. |
+| **archivist** | `compose/archivist.yml` | archivist. It keeps every database on Postgres and ClickHouse in a bucket of its own as [restic](https://restic.net) snapshots, under a master key that never touches the host. |
 
-Two things are pointed at rather than run: an S3-compatible object store you bring, which
-fort, Langfuse and Twenty each need a bucket of, and a secret store you own, which holds fort's
-master key.
+neo4j is planned.
 
-The interview offers to make each of those for you on AWS, with admin credentials it uses
-once and never writes, and it adopts what already exists in your account rather than making
-a second one. Decline, and it prints a checklist with your names filled in, for any
-S3-compatible provider. Each bucket is reached by an access key of its own. fort's may delete
-under `locks/` and nowhere else, so a compromised host cannot erase its own archives;
-Langfuse's may delete, because its Data Retention feature does, and so may Twenty's, because
-it moves a file by copying it and deleting the original. Nothing may ever expire in
-fort's, and *Object store* says why.
+There is one Postgres and one ClickHouse for the whole host, never one per application. Each
+application gets its own database on them, owned by a user of the same name. Redis is the
+exception: a product that needs it runs its own, inside the product, and nothing else is
+pointed at it.
 
-Each application gets its own database on the shared Postgres, owned by a user of the same
-name. fort discovers databases by reading each server rather than by being handed a list,
-so a database is backed up from the day it exists.
+Two things are pointed at rather than run. One is an S3-compatible object store you bring:
+the archivist, Langfuse and Twenty each need a bucket of it. The other is a secret store you
+own, which holds the archivist's master key. userland makes neither: you make them, and
+*Object store* and *Secret store* say how. Each bucket is reached by an access key of its own.
+The archivist's may delete under `locks/` and nowhere else, so a compromised host cannot erase
+its own archives. Langfuse's may delete, because its Data Retention feature does, and so may
+Twenty's, because it moves a file by copying it and deleting the original. Nothing may ever
+expire in the archivist's, and *Object store* says why.
 
 ## The shape
 
-- **One compose project.** The CLI renders one `compose.yml` at the root from a template
-  per product and what you switched on. It holds only what is on, it holds no secret, and
-  you never edit it.
-- **One `.env`.** Every choice you make lands in it, and it is the only file you own. The
-  CLI asks only what has no safe default; everything else has a documented name you may
-  add by hand, and the CLI never touches a line it did not write.
-- **You switch on containers, not bundles.** Postgres without pgadmin is a valid choice.
-  Switching one off removes it and keeps its volume and its database until you ask to
-  reclaim them.
-- **Upstream, not a copy you edit.** You never edit a tracked file — so `git pull` keeps
-  working, and it is how the next container reaches you.
+- **One compose project, one file per product.** `compose.yml` at the root is traefik.
+  Every other product is `compose/<product>.yml`. `COMPOSE_FILE` in `.env` lists the ones you
+  switch on, and compose reads nothing else.
+- **One `.env`.** It names the products and holds every variable they read. Compose refuses
+  to start while a required one is missing.
+- **You switch on products, not containers.** A product's containers are always on together:
+  langfuse is its web, its worker and its Redis. pgadmin is a product of its own, so Postgres
+  without pgadmin is a valid choice.
+- **Upstream, not a copy you edit.** You never edit a tracked file, so `git pull` keeps
+  working, and it is how the next product reaches you.
+
+[ADR 0001](docs/adr/0001-compose-alone.md) says why userland runs on compose alone.
 
 ## Two visibilities
 
-**local** — plain HTTP on `*.localhost`. No DNS record, no certificate, no domain to buy.
+**local**: plain HTTP on `*.localhost`. No DNS record, no certificate, no domain to buy.
 This is how you find out whether you want it. Only this machine resolves those names, but
 traefik listens on every interface, so anyone on a network you share who sends the name
 reaches what is on.
 
-**public** — real hostnames, with TLS issued over a DNS-01 challenge.
+**public**: real hostnames, with TLS issued over a DNS-01 challenge.
 
-They are one variable apart, and both go through traefik. Without traefik, each container
-answers on this machine only, at a loopback port of its own. That holds on Docker Engine 28.0
-or later; before it, a neighbour on the same network can reach a loopback port too.
+Both go through traefik. Public is local plus two changes:
+
+1. `compose/public.yml` at the end of `COMPOSE_FILE`. It changes traefik alone: it opens 443,
+   gets certificates, and redirects plain HTTP to 443.
+2. Three variables in `.env`, which every product reads:
+
+| Variable | local | public | Meaning |
+|---|---|---|---|
+| `DOMAIN` | `localhost` | your domain | Every hostname is a name under it, such as `n8n.${DOMAIN}`. |
+| `SCHEME` | `http` | `https` | The scheme in every link a product writes. |
+| `SECURE_COOKIES` | `false` | `true` | Whether n8n and pgadmin mark their cookies secure. A secure cookie over plain HTTP is a login that never completes. |
+
+All three are required. A public host that forgot one would serve `http` links, so compose
+refuses instead.
 
 ## Running it
 
 ```sh
 git clone https://github.com/Abdullah0297445/userland
 cd userland
-./bootstrap
 ```
 
-`bootstrap` builds the CLI inside a `golang` container, drops the binary at the root and
-hands off to it. Docker is all the host needs, and the binary always matches the commit
-you have checked out. The first build pulls the image and takes a minute; later builds
-reuse a cache in a docker volume named `userland-go`.
+Write `.env` at the root. It names the products and holds what they read, for example:
 
-With no verb, it runs the interview, which writes `.env` and applies. `.env` is yours
-afterwards: every line it holds is listed in [`VARIABLES.md`](VARIABLES.md), and the
-interview never asks again for what is already there.
+```sh
+COMPOSE_FILE=compose.yml:compose/postgres.yml:compose/metabase.yml
+DOMAIN=localhost
+SCHEME=http
+SECURE_COOKIES=false
+POSTGRES_PASSWORD=...
+PGBOUNCER_AUTH_PASSWORD=...
+METABASE_DB_PASSWORD=...
+MB_ENCRYPTION_SECRET_KEY=...
+```
 
-| Verb | What it does |
-|---|---|
-| `./bootstrap` | The interview: ask what is new, write `.env`, apply. |
-| `./bootstrap on NAME…` | Switch containers on, then apply. A product's name opens its gate instead, with what is on already ticked. Asks whatever variable the new selection needs before writing anything. |
-| `./bootstrap off CONTAINER…` | Switch containers off, then apply. Refuses while a container is blocking another, naming the dependents. Prints what it left behind and offers to reclaim it; answering nothing keeps it. |
-| `./bootstrap set VAR` | Ask one variable again, then apply. `set VISIBILITY` switches visibility and then asks whatever the new one needs. Only asked variables: an optional one is a line you add by hand. |
-| `./bootstrap reclaim CONTAINER…` | Drop the volume and the database a switched-off container left, after naming them and asking. |
-| `./bootstrap contract` | Print the Contract: what is on, and how to reach it. |
-| `./bootstrap postgres database add NAME` | Make a consumer's database and user, and print the DSN once. `--session` names the session door; `--api` adds the PostgREST recipe. |
-| `./bootstrap postgres database remove NAME` | Drop a consumer's database and its users, after asking. |
-| `./bootstrap apply` | Render, bring up, provision, print. |
-| `./bootstrap render` | Write `compose.yml` and stop. |
-| `./bootstrap provision` | Converge the door's auth user and every switched-on database, on Postgres and ClickHouse, and nothing else. |
-| `./bootstrap new PRODUCT CONTAINER…` | For contributors: append a product to `manifest.json` and write its template, with placeholders. |
-| `./bootstrap check [--write]` | Assert the manifest and templates hold. `--write` regenerates `VARIABLES.md`. |
+Then bring it up:
 
-`./bootstrap --help` lists the same verbs, grouped the same way; a product's verbs sit under
-the product's name, so `postgres` has `database` and `fort` has its four.
-Every verb that changes `.env` ends with an apply, and every verb that drops something asks
-first and defaults to no.
+```sh
+docker compose up -d --remove-orphans
+```
 
-### What apply does
+- **`compose.yml` always comes first.** Compose reads every relative path, such as
+  `./config/pgadmin-servers.json`, from the first file's folder. With no `COMPOSE_FILE`
+  at all, `docker compose up` runs traefik alone.
+- **A product listed without one it needs is refused**, for example
+  `service "metabase" depends on undefined service "pgbouncer-transaction"`. So is a missing
+  required variable: `required variable POSTGRES_PASSWORD is missing a value`.
+- **`docker compose config --variables`** lists every variable the listed products read,
+  whether it is required, and its default. Each product's section below says what each one
+  means.
+- **To switch a product off**, take it out of `COMPOSE_FILE` and run the same command.
+  `--remove-orphans` removes its containers. Its volumes stay, and so does its database. To
+  drop a volume too, `docker volume rm` it by hand.
+- **`docker compose down`** stops everything and keeps every volume. The next `up` brings it
+  back.
 
-1. Validates the selection: nothing on is refused, and so is a container whose required
-   dependency is off. A missing optional dependency is a warning.
-2. Renders `compose.yml`. Only switched-on containers are in it, every value is a `${VAR}`
-   reference, and there are no profiles.
-3. If Postgres or ClickHouse is on, brings them up first and waits for them to be healthy,
-   then provisions.
-4. Brings up everything else with `--remove-orphans` and `--build`. A container absent from
-   the file is an orphan, so switching it off is enough to remove it; its volume and its
-   database stay. `--build` is for fort, the one image this repo builds.
-5. Prints the Contract, what is on and how to reach it (under *For a consumer*), and the
-   `.env` lines you must copy off the machine because they cannot be regenerated.
-6. If fort is on, backs up. Every apply ends with a backup, so a host is kept from the day
-   fort is switched on, and a listed file that has gone missing or a database that will not
-   dump fails the apply rather than being noticed a month later.
+**Values in `.env`.** Each fits on one line, without `$`, `#`, quotes or a backtick, and
+without a space at either end, because compose reads `.env` unquoted. A password that
+travels inside a URL may hold only letters, digits, `-`, `.`, `_` and `~`. That is every
+Postgres and ClickHouse password, and twenty's Redis password. This makes a secret that fits
+everywhere, including langfuse's 64-character hex key:
 
-Switching traefik on or off recreates every HTTP container, because their labels and
-published ports change. That is expected and loses nothing.
+```sh
+docker run --rm alpine sh -c "od -An -tx1 -N32 /dev/urandom | tr -d ' \n'"
+```
 
-### Switching off, and reclaiming
-
-`off` removes the container and keeps its named volumes and its database, then names them
-and offers to reclaim them. Decline, and `reclaim CONTAINER` drops them later, after naming
-them again and asking. A database shared with a container that is still on is not offered.
-Reclaiming `postgres-18` drops its volume, and every database on Postgres lives in it, which
-the question says; `clickhouse` and its volume the same. The product's network stays until `docker compose down`; it costs
-nothing.
-
-There is no verb that switches everything off: an empty selection is a refusal. To stop
-the host, `docker compose down` stops every container and keeps every volume; the next
-apply brings them back.
-
-### The interview
-
-1. **Visibility**, once, on the first run.
-2. **One gate per product**, in dependency order: a product whose containers another
-   product's require is asked after it, so applications come first and traefik last. A
-   gate lists the product's containers with nothing ticked, and a container something
-   else requires or wants says so beside its name. Nothing is on until you tick it;
-   whatever you leave unticked is recorded as off and not asked again.
-3. **The selection is checked before any variable is asked.** Nothing on is a refusal, and
-   so is a container whose required dependency you left off, named. A refusal writes
-   nothing, so a wrong selection costs no answers. A missing optional dependency is a
-   warning, said out loud and waved past.
-4. **Variables**, product by product, for the switched-on containers, skipping any already
-   in `.env`. A variable with a `when` is asked only when it applies: in one visibility,
-   or when another variable holds a given value. Each answer is checked against its
-   type as you type it, and every one must fit on one line, without `$`, `#`, quotes or
-   a backtick and without a space at either end, because compose reads `.env` unquoted.
-   A container's external dependencies come after its own variables: the name and the
-   region, then the offer to make it on AWS, then the checklist and the rest, under *Object
-   store* and *Secret store* below.
-5. **Write `.env`**, then apply.
-
-| Type | The interview asks for |
-|---|---|
-| `text` | Anything that fits the line. |
-| `hostname` | Labels of letters, digits and hyphens, joined by dots. |
-| `email` | One address, like `name@example.com`. |
-| `url` | A scheme and a host, like `https://example.com`. |
-| `port` | A number from 1 to 65535. |
-| `secret` | Pasted, hidden as you type. Never generated. |
-| `generated` | Enter for 26 URL-safe characters, or paste your own, hidden as you type. |
-| `database-password` | The same, except that a paste may hold only letters, digits, `-`, `.`, `_` and `~`, because the product carries it inside a connection URL. Every Postgres and ClickHouse password is one; provisioning sets it from `.env`, so pasting one is never needed. A product that reads its Redis from a URL asks that password as one too. |
-| `hex` | Enter for a key of 64 hexadecimal characters, 256 bits, or paste one of the same shape, hidden as you type. For a product that reads its key as hex. |
-| `choice` | One of the manifest's options. |
-| `paths` | Absolute paths on this machine, joined by `:`, each of which must exist. |
-
-A re-run asks only about what is new: a container `.env` records as neither on nor off,
-and a variable the selection needs that `.env` lacks. Answering nothing new, it applies
-and stops. Switching `VISIBILITY` to `public` in `.env` makes every `when: public`
-variable new, so the next run asks them. Ctrl-C anywhere writes nothing.
-
-When a container's variable is renamed or dropped upstream, `manifest.json` says so, and
-the next run of any verb moves the value to its new name or drops the line, saying so.
-Those are the only two ways a line the CLI wrote is ever moved or deleted.
-
-In a terminal that cannot draw, or from a script, set `TERM=dumb`: the interview then asks
-with plain numbered prompts and reads lines. A hidden prompt still needs a terminal.
+**Memory limits.** Every container reads `<CONTAINER>_MEM_LIMIT`: its name in capitals, with
+`-` made `_`, such as `LANGFUSE_WEB_MEM_LIMIT=2g`. Unset or `0` means no limit. Each product's
+table lists its own.
 
 ## Provisioning
 
-Provisioning converges on `.env`. Every run, through `docker exec postgres-18 psql`:
+A product that keeps data on Postgres or ClickHouse needs its database and user made before
+it starts. **Nothing makes them yet.** The Go CLI that did is gone, and one-shot setup
+containers will do it next. What each needs:
 
-- The user the doors look passwords up with, `pgbouncer_auth`, and its `SECURITY DEFINER`
-  lookup function in the `postgres` database.
-- Each switched-on container's database: its user, the database with `CONNECT` revoked
-  from everyone else and `CREATE` on `public` revoked, and the `vector` extension.
-- Each setting the manifest names on a database's user, such as n8n's `statement_timeout`,
-  with `ALTER ROLE … SET` when the stored value differs. A setting the manifest stops naming
-  is never reset.
+- On Postgres, the user the doors look passwords up with, `pgbouncer_auth`, and its
+  `SECURITY DEFINER` lookup function, `public.pgbouncer_get_auth`, in the `postgres`
+  database. Its password is `PGBOUNCER_AUTH_PASSWORD`.
+- On Postgres, for each of metabase, n8n, langfuse and twenty: a user and a database of that
+  name, which the user owns. The password is the product's `_DB_PASSWORD`. `CONNECT` on the
+  database is revoked from everyone else, `CREATE` on `public` is revoked, and the `vector`
+  extension is installed. The `n8n` user also carries `statement_timeout` of five minutes,
+  and *n8n* says why.
+- On ClickHouse, for langfuse: a user and a database named `langfuse`. The password is
+  `LANGFUSE_CLICKHOUSE_PASSWORD`, and the grants are under *ClickHouse*.
 
-A password is compared with the user's stored SCRAM verifier and changed only when they
-differ, so a re-run changes nothing, a hand-edited or restored `.env` heals itself, and
-rotating a password is one edit plus an apply. Passwords travel on stdin, never on a
-command line. Nothing is ever dropped.
-
-On ClickHouse the same, through `docker exec clickhouse clickhouse-client` as the admin user
-`default`, whose password the image itself rewrites from `.env` on every start: each
-switched-on container's database and user, and the grants under *ClickHouse* below, added
-only when `SHOW GRANTS` would change. ClickHouse keeps no hash a program can recompute, so a
-password is checked by logging in as the user, which fails for real there, and set only when
-the login fails. The client reads its password from its environment, so none is on a command
-line.
+Nothing is ever dropped. A password changes when `.env` changes.
 
 ## Object store
 
-userland never runs an object store. A container that needs a bucket says so in the manifest,
-`"external": {"FORT_S3": {"kind": "bucket", "versioned": true}}`, and the kind supplies five
-variables under that prefix: `_BUCKET`, `_REGION`, `_ENDPOINT`, `_ACCESS_KEY_ID` and
-`_SECRET_ACCESS_KEY`. The interview asks the name (enter to generate
-`userland-<dependency>-<8 hex>`, or type one you made) and the region, then offers to make the
-rest on AWS. Decline, the default, and it prints a checklist with your names in it and asks for
-the endpoint and the access key. A dependency whose five variables are in `.env` is never asked
-again, and two containers naming one prefix share the bucket. The region is text with no
-default, because `auto` is a real answer on Cloudflare R2. The endpoint is only a scheme and a
-host, with no path, because the bucket's name is asked on its own. A trailing `/` is dropped as
-you enter it.
-
-**The offer.** *Create it on AWS now?* Yes asks for an admin access key id, its secret and, if
-it has one, a session token, once per run. They go into the environment of
-`docker run --rm amazon/aws-cli` and are written nowhere, and the CLI says so when it finishes.
-The steps: `sts get-caller-identity`; the bucket, `head-bucket` then `create-bucket` in the
-region; versioning on when the kind says `versioned`; an IAM user named as the bucket; an inline
-policy named `userland` on that user, written on every run; an access key. Then the five
-variables land in `.env`, with the endpoint `https://s3.<region>.amazonaws.com`. What already
-exists is **adopted**, never overwritten: a bucket you own is reused and its versioning
-re-applied, a user that exists gets the policy re-applied and you are asked to paste one of its
-keys or to mint one, and a bucket name another account owns is refused and asked again. A user
-already holding two access keys stops the run, since AWS allows no third. The offer reads
-`AWS_ENDPOINT_URL` from your environment, as the aws CLI does, and nothing else about it is
-configurable. Outside the offer nothing in the interview reaches the network.
+userland never runs an object store, and it makes no bucket and no key: you make them. A
+product that needs a bucket reads five variables under one prefix: `_BUCKET`, `_REGION`,
+`_ENDPOINT`, `_ACCESS_KEY_ID` and `_SECRET_ACCESS_KEY`. `ARCHIVIST_S3`, `LANGFUSE_S3` and
+`TWENTY_S3` are the three. The region is what your provider calls it, which is `auto` on
+Cloudflare R2. The endpoint is a scheme and a host, with no path and no trailing `/`, because
+the bucket's name is its own variable. On AWS it is `https://s3.<region>.amazonaws.com`.
 
 **The keys, and what each may do.** Every key reaches its one bucket and nothing else. It lists
 the bucket, gets and puts objects, and aborts a multipart upload, since a killed upload leaves
-parts behind and abort can never remove a finished object. `delete` says what else it may remove.
-Left out, nothing, and that is the default, so a compromised host cannot erase its own archives.
-`"*"` means any object in the bucket; langfuse's and twenty's are the two, because langfuse's
-Data Retention feature deletes and twenty moves a file by copying it and deleting the original. A prefix such as `"locks/*"` means objects under that prefix and nowhere else; fort's is
-the one, so a backup can clear the lock file it just wrote and cannot touch the archive. Nothing
-in userland reads whether versioning is on, so no key may. This is the document the offer writes
-for a bucket with no `delete`; `"*"` adds `s3:DeleteObject` to the second statement, and a prefix
-adds a third:
+parts behind and abort can never remove a finished object. What else it may remove differs.
+By default, nothing, so a compromised host cannot erase its own archives. Langfuse's and
+twenty's may delete any object in their bucket, because langfuse's Data Retention feature
+deletes and twenty moves a file by copying it and deleting the original. The archivist's may
+delete under `locks/` and nowhere else, so a backup can clear the lock file it just wrote and
+cannot touch the archive. Nothing in userland reads whether versioning is on, so no key may.
+This is the policy for the archivist's key. Leave out the third statement for a key that may
+delete nothing; for langfuse's and twenty's, add `s3:DeleteObject` to the second instead:
 
 ```json
 {
@@ -264,59 +190,59 @@ adds a third:
 ```
 
 **Retention is yours, except where nothing may expire.** Nothing in userland deletes from a
-bucket whose key cannot, and the CLI never writes a lifecycle rule: any rule is set by you, at
-your provider. The first time a bucket's container is switched on, the CLI says so; without a
-rule the bucket grows. A bucket the manifest marks `"never_expire": true` is the
-exception, and it is not a preference. What it holds is one archive whose parts point at each
-other, so an object removed by age takes with it every later part that pointed at it. There the
-CLI tells you to set no rule at all, and S3 performs an expiration itself, so no bucket policy
-can stop one you set by mistake. fort's bucket is the one.
+bucket whose key cannot, and userland never writes a lifecycle rule: any rule is set by you, at
+your provider. Without a rule, a bucket grows. The archivist's bucket is the exception, and it
+is not a preference. What it holds is one archive whose parts point at each other, so an
+object removed by age takes with it every later part that pointed at it. Set no rule at all
+there. S3 performs an expiration itself, so no bucket policy can stop one you set by mistake.
+Turn versioning on for it: *The archivist* says why.
 
-**By hand, at any provider.** The checklist the interview prints is the short form of this.
+**By hand, at any provider.**
 
 - **AWS.** Bucket, then user, then the inline policy above, then an access key. New buckets
   block public access, disable ACLs and encrypt at rest by default, so nothing else is set.
-  Retention is a lifecycle rule, where a bucket allows one. **No rule of any kind on fort's
-  bucket**, not even a
-  noncurrent-version expiration: the only versions that ever appear there are the ones
-  something else left, which are both the evidence and the way back. AWS also recommends a
-  rule that aborts incomplete multipart uploads after a few days; that one is yours too,
-  and it never fires for fort, whose objects are far below one part.
+  Retention is a lifecycle rule, where a bucket allows one. **No rule of any kind on the
+  archivist's bucket**, not even a noncurrent-version expiration: the only versions that ever
+  appear there are the ones something else left, which are both the evidence and the way
+  back. AWS also recommends a rule that aborts incomplete multipart uploads after a few days;
+  that one is yours too, and it never fires for the archivist, whose objects are far below one
+  part.
 - **Backblaze B2.** An application key restricted to the one bucket with `listFiles`,
-  `readFiles` and `writeFiles`, adding `deleteFiles` only for a `delete` bucket. `writeFiles`
-  without `deleteFiles` is the no-delete key. A B2 key carries one capability list for the
-  whole key, so **`delete` cannot be scoped to a prefix here**: fort's key either deletes
-  everywhere or nowhere, and *fort* says what each costs. Every B2 bucket keeps versions, so
-  the overwrite guard is there by default — keep it that way and ignore restic's own advice
-  to add a "keep only the last version" rule, which is for repositories that prune and would
-  throw the guard away. Retention is B2's lifecycle rules; through the S3 API an expiration
-  rule is paired with a delete-marker rule, and neither belongs on fort's bucket. Endpoint
-  `https://s3.<region>.backblazeb2.com`, region as in the endpoint. **This is the provider to
-  pick without an AWS account.**
+  `readFiles` and `writeFiles`, adding `deleteFiles` only for langfuse's and twenty's.
+  `writeFiles` without `deleteFiles` is the no-delete key. A B2 key carries one capability list
+  for the whole key, so **delete cannot be scoped to a prefix here**: the archivist's key either
+  deletes everywhere or nowhere, and *The archivist* says what each costs. Every B2 bucket keeps
+  versions, so the overwrite guard is there by default. Keep it that way and ignore restic's
+  own advice to add a "keep only the last version" rule, which is for repositories that prune
+  and would throw the guard away. Retention is B2's lifecycle rules; through the S3 API an
+  expiration rule is paired with a delete-marker rule, and neither belongs on the archivist's
+  bucket. Endpoint `https://s3.<region>.backblazeb2.com`, region as in the endpoint. **This is
+  the provider to pick without an AWS account.**
 - **Cloudflare R2.** A token of *Object Read & Write* scoped to the bucket. There is no level
-  that writes without deleting, so on R2 fort's key can delete anywhere in its bucket, and a
-  compromised host could erase its own archives there. R2 has no versioning either, so fort's
-  overwrite guard is absent as well; fort's own history is unaffected, because it never lived
-  in versions. Both of those are R2's floor, not a setting: R2 is the weakest of the three for
-  fort. Lifecycle rules exist and are prefix-scoped, and none belongs on fort's bucket.
-  Endpoint `https://<account id>.r2.cloudflarestorage.com`, region `auto`. Virtual-hosted
-  requests are accepted, so no path-style setting is needed.
+  that writes without deleting, so on R2 the archivist's key can delete anywhere in its bucket,
+  and a compromised host could erase its own archives there. R2 has no versioning either, so
+  the overwrite guard is absent as well; the archivist's own history is unaffected, because it
+  never lived in versions. Both of those are R2's floor, not a setting: R2 is the weakest of
+  the three for the archivist. Lifecycle rules exist and are prefix-scoped, and none belongs on
+  the archivist's bucket. Endpoint `https://<account id>.r2.cloudflarestorage.com`, region
+  `auto`. Virtual-hosted requests are accepted, so no path-style setting is needed.
 
 ## Secret store
 
-fort's master key lives in a secret store you own, never on the host. The kind is
-`"external": {"FORT_KEY": {"kind": "secret-store"}}`; its five variables are `_PROVIDER`
-(`ssm`, AWS Parameter Store, the one there is), `_NAME`, `_REGION`, `_ACCESS_KEY_ID` and
-`_SECRET_ACCESS_KEY`, and the interview asks them the same way: the name (enter to generate
-`/userland/<dependency>-<8 hex>`, or type one you made), the region, then the offer or the
-checklist.
+The archivist's master key lives in a secret store you own, never on the host. userland reads
+it and never writes it. Five variables reach it: `ARCHIVIST_KEY_PROVIDER` (`ssm`, AWS
+Parameter Store, the one there is), `ARCHIVIST_KEY_NAME`, `ARCHIVIST_KEY_REGION`,
+`ARCHIVIST_KEY_ACCESS_KEY_ID` and `ARCHIVIST_KEY_SECRET_ACCESS_KEY`.
 
-The offer writes a `SecureString` parameter with a 32-byte random value it never shows and
-never overwrites: a parameter that exists is adopted, because a replaced master key would make
-every archive fort ever wrote unreadable. Then a user named from the parameter with `/` made `-`,
-this policy, and an access key. `NAME` is the parameter's name without its leading slash, and
-`KEY-ID` is the account's `aws/ssm` key, which `kms describe-key --key-id alias/aws/ssm`
-returns; a `SecureString` written without a key of your own is encrypted under it.
+Make these, in this order:
+
+1. A `SecureString` parameter holding 32 random bytes. **Never overwrite it**: a replaced
+   master key makes every archive the archivist ever wrote unreadable.
+2. A user for it.
+3. This policy on the user. `NAME` is the parameter's name without its leading slash, and
+   `KEY-ID` is the account's `aws/ssm` key, which `kms describe-key --key-id alias/aws/ssm`
+   returns; a `SecureString` written without a key of your own is encrypted under it.
+4. An access key for the user.
 
 ```json
 {
@@ -328,98 +254,126 @@ returns; a `SecureString` written without a key of your own is encrypted under i
 }
 ```
 
-By hand: the parameter, the user, the policy, the access key, in that order. The key may only
-read that one parameter, and nothing it holds writes.
+The key may only read that one parameter, and nothing it holds writes.
 
 ## traefik
 
-traefik is the one container that publishes on every interface: port 80, and 443 in public
-visibility, where the `websecure` entrypoint listens. Every HTTP container is reached through
-it by the labels the generator writes from the manifest, and none holds a certificate or a
-redirect of its own: in public visibility the `web` entrypoint sends every plain-HTTP request
-to `websecure` before any router is matched.
+traefik is the one container that publishes a port: 80, and 443 in public visibility, where
+the `websecure` entrypoint listens. Every HTTP container is reached through it by four labels,
+the same in both visibilities, and none holds a certificate or a redirect of its own. traefik
+reads its settings from `TRAEFIK_*` variables, not flags, because compose merges `environment`
+by key: `compose/public.yml` adds its settings to the local ones rather than repeating them.
+
+**In public, TLS sits on the entrypoint.** Every router attached to `websecure` gets a
+certificate for the names in its `Host` rule, and `web` sends every plain-HTTP request to
+`websecure` before any router is matched. That is why a router needs no TLS label and no
+entrypoint label: a router with no entrypoint attaches to every one.
 
 **Certificates come over a DNS-01 challenge**, from Let's Encrypt, through the provider
 `DNS_PROVIDER` names. A certificate can therefore be issued before the hostname has a public
 DNS record, but nothing answers on the hostname until it does. The propagation check asks the
-public resolvers `1.1.1.1` and `8.8.8.8` rather than the host's own, and on Route 53 the
-template passes no `AWS_HOSTED_ZONE_ID`, so the zone of each hostname is found for it; both
-are what let one host hold certificates in more than one DNS zone.
+public resolvers `1.1.1.1` and `8.8.8.8` rather than the host's own, and on Route 53 no
+`AWS_HOSTED_ZONE_ID` is passed, so the zone of each hostname is found for it; both are what let
+one host hold certificates in more than one DNS zone.
 
 **It logs at `INFO`**, not traefik's default of `ERROR`, so every certificate issued or renewed
 is a line in `docker logs traefik`. At `ERROR` a renewal that succeeded logs nothing, and you
 cannot tell it apart from one that never ran.
 
+| Variable | Needed | Meaning |
+|---|---|---|
+| `CERT_EMAIL` | required in public | Email for the ACME account. |
+| `DNS_PROVIDER` | required in public | DNS-01 provider: `route53` or `cloudflare`. |
+| `AWS_ACCESS_KEY_ID` | with `route53` | Access key that may write TXT records in the zone. |
+| `AWS_SECRET_ACCESS_KEY` | with `route53` | Its secret. |
+| `AWS_REGION` | default `us-east-1` | Region for Route 53 calls. |
+| `CF_DNS_API_TOKEN` | with `cloudflare` | Cloudflare token that may edit DNS in the zone. |
+| `TRAEFIK_MEM_LIMIT` | default no limit | Memory limit of `traefik`. |
+
 ## Postgres
 
-Four containers, each switched on by itself. `postgres-18` is the server: one Postgres for
-the whole host, with a database per product and per consumer, each owned by a user of the
-same name. `pgbouncer-transaction` and `pgbouncer-session` are the two doors, under *For a
-consumer*. `pgadmin` is the browser UI. Every database is archived by fort, under *fort*.
+Three containers, always on together. `postgres-18` is the server: one Postgres for the whole
+host, with a database per product and per consumer, each owned by a user of the same name.
+`pgbouncer-transaction` and `pgbouncer-session` are the two doors, under *For a consumer*.
+Every database is archived by the archivist, under *The archivist*.
 
-**Nothing reaches Postgres but through a door, except fort and pgadmin**, which name
-`postgres-18:5432` directly. fort does, so that it keeps every database whichever door is
-on. pgadmin does because its Query Tool's stop button cancels by the process id its
-connection was handed at the start, and through a door that id is the door's own, so the
-button reports the query complete while it runs on. Provisioning
-connects to nothing: it runs `psql` inside `postgres-18` with `docker exec`, and it has to,
-since the doors look every password up through a user that provisioning makes.
+**Nothing reaches Postgres but through a door, except the archivist and pgadmin.** It is a
+wall, not a habit: `postgres-18` sits on a private network, `postgres-server`, that only the
+doors, the archivist and pgadmin join. Consumers and products join `userland_postgres`, where
+only the doors are. The archivist names `postgres-18:5432` so that it keeps every database
+whichever door is on. pgadmin does because its Query Tool's stop button cancels by the process
+id its connection was handed at the start, and through a door that id is the door's own, so the
+button reports the query complete while it runs on.
 
-### pgadmin
+| Variable | Needed | Meaning |
+|---|---|---|
+| `POSTGRES_PASSWORD` | required | Password of the Postgres superuser, `postgres`. |
+| `PGBOUNCER_AUTH_PASSWORD` | required | Password of `pgbouncer_auth`, the user the doors look passwords up with. |
+| `POSTGRES_18_MEM_LIMIT` | default no limit | Memory limit of `postgres-18`. |
+| `PGBOUNCER_TRANSACTION_MEM_LIMIT` | default no limit | Memory limit of `pgbouncer-transaction`. |
+| `PGBOUNCER_SESSION_MEM_LIMIT` | default no limit | Memory limit of `pgbouncer-session`. |
 
-It registers exactly one server, `postgres-18`, from
-[`config/pgadmin-servers.json`](config/pgadmin-servers.json), loaded into an empty
-`pgadmin_data` volume at the first start and never again.
+## pgadmin
+
+pgadmin is a product of its own, and it needs postgres. It registers exactly one server,
+`postgres-18`, from [`config/pgadmin-servers.json`](config/pgadmin-servers.json), loaded into
+an empty `pgadmin_data` volume at the first start and never again.
 `PGADMIN_REPLACE_SERVERS_ON_STARTUP` is deliberately not set: it deletes every server row
 and re-imports at each start, and a password saved in the browser is part of the row it
 deletes. The trade is that editing that file does not reach a pgadmin that has already
-run — change the server in the browser too, or switch pgadmin off, reclaim its volume and
-switch it back on to re-seed.
+run. Change the server in the browser too, or re-seed: take pgadmin out of `COMPOSE_FILE`,
+`docker volume rm userland_pgadmin_data`, and put it back.
 
 That server connects as the superuser, and its password is not in the file: paste
 `POSTGRES_PASSWORD` from `.env` the first time, and pgadmin keeps an encrypted copy in its
 volume if you tick *Save password*.
 
 **Its own login is the only lock**, and it stands in front of the superuser of every
-database on this host. The email and password the interview asks for are what you sign in
-with; nothing else is in the way, in either visibility. The container is created with them
-only when its volume is empty, so changing either line in `.env` afterwards does not change
-the login of a pgadmin that has already started — switch it off, reclaim the volume, and
-switch it on again, which costs one server row and a saved password. The image floats on
-`latest` on purpose, so security fixes arrive without review, and its volume needs no
-backup for the same reason.
+database on this host. That is why it is its own product: on a public host you may want it
+off while Postgres stays on. The email and password in `.env` are what you sign in with;
+nothing else is in the way, in either visibility. The container is created with them only
+when its volume is empty, so changing either line afterwards does not change the login of a
+pgadmin that has already started. Re-seed it as above, which costs one server row and a
+saved password. The image floats on `latest` on purpose, so security fixes arrive without
+review, and its volume needs no backup for the same reason.
 
-Its session cookie is marked secure only in public visibility, where there is TLS for it to
-ride; in local, a secure cookie is a login that never completes. It is told there is exactly
-one proxy in front of it while traefik is on, and none while traefik is off.
+Its session cookie follows `SECURE_COOKIES`: secure in public, where there is TLS for it to
+ride; not in local, where a secure cookie is a login that never completes. It is told there is
+exactly one proxy in front of it, traefik.
+
+| Variable | Needed | Meaning |
+|---|---|---|
+| `PGADMIN_DEFAULT_EMAIL` | required | Email address you sign in to pgadmin with. |
+| `PGADMIN_DEFAULT_PASSWORD` | required | Password you sign in to pgadmin with. |
+| `PGADMIN_MEM_LIMIT` | default no limit | Memory limit of `pgadmin`. |
 
 ## ClickHouse
 
 userland runs ClickHouse as one container. langfuse calls that development-only, because one
 box has no redundancy. Every event langfuse ingests is written to your bucket first, and
-Postgres holds everything you configure; ClickHouse holds what you see in the UI. fort
-archives every database on it, under *fort*.
+Postgres holds everything you configure; ClickHouse holds what you see in the UI. The archivist
+archives every database on it, under *The archivist*.
 
 The image is `clickhouse/clickhouse-server:26.8`, the long-term-support line after the 26.4
 that langfuse recommends, and it moves within that line. The container runs at ClickHouse's
 own defaults, in UTC, which langfuse requires, with the one setting the image documents,
 `nofile 262144`. `CLICKHOUSE_PASSWORD` is the admin user `default`, which provisioning and
-fort use and no product does; the image turns on access management for it, so it may create
-users.
+the archivist use and no product does; the image turns on access management for it, so it may
+create users.
 
-**Every product gets its own database and user on ClickHouse, made by provisioning, exactly
-as on Postgres.** The template holds nothing product-specific, and the image's `CLICKHOUSE_DB`
-is not used: it acts only on a first start with an empty volume, and would put a product's
-name in the central template. The user is named as its database and holds, on that database
-alone, what langfuse documents its user needs: `SELECT`, `INSERT`, `ALTER UPDATE`,
-`ALTER DELETE`, `CREATE`, `DROP TABLE`, `DROP VIEW`, the column, index and view `ALTER`s,
-`SYSTEM SYNC REPLICA`, `SYSTEM MERGES` and `ALTER SETTINGS`; and `SELECT` on the columns of
-`system.parts`, `system.mutations` and `system.tables` it reads, on `system.processes` and on
+**Every product gets its own database and user on ClickHouse, exactly as on Postgres.** The
+compose file holds nothing product-specific, and the image's `CLICKHOUSE_DB` is not used: it
+acts only on a first start with an empty volume, and would put a product's name in the shared
+file. The user is named as its database and holds, on that database alone, what langfuse
+documents its user needs: `SELECT`, `INSERT`, `ALTER UPDATE`, `ALTER DELETE`, `CREATE`,
+`DROP TABLE`, `DROP VIEW`, the column, index and view `ALTER`s, `SYSTEM SYNC REPLICA`,
+`SYSTEM MERGES` and `ALTER SETTINGS`; and `SELECT` on the columns of `system.parts`,
+`system.mutations` and `system.tables` it reads, on `system.processes` and on
 `system.query_log*`. It cannot read another database, make one, or make a user.
 
-**ClickHouse is the heaviest container here.** `CLICKHOUSE_MEM_LIMIT` in `.env` is where a cap
-goes: ClickHouse reads the cgroup limit and keeps its own ceiling at nine tenths of it, so a
-compose limit is one it respects rather than one it dies against. No number is written here.
+**ClickHouse is the heaviest container here.** `CLICKHOUSE_MEM_LIMIT` is where a cap goes:
+ClickHouse reads the cgroup limit and keeps its own ceiling at nine tenths of it, so a compose
+limit is one it respects rather than one it dies against. No number is written here.
 
 ClickHouse logs at trace level to files inside the container, in `/var/log/clickhouse-server`,
 rotated by the image; `docker logs clickhouse` shows only the entrypoint. Nothing is published
@@ -427,39 +381,40 @@ on the host: products reach it on `userland_clickhouse`, ports 8123 for HTTP and
 native protocol, and you reach it with `docker exec clickhouse clickhouse-client`.
 
 Its backup directory, `/var/lib/clickhouse/backups`, is a volume of its own,
-`clickhouse_backups`. fort mounts it too while both are on, and it holds nothing between
-runs.
+`clickhouse_backups`. The archivist mounts it too, and it holds nothing between runs.
+
+| Variable | Needed | Meaning |
+|---|---|---|
+| `CLICKHOUSE_PASSWORD` | required | Password of the ClickHouse admin user, `default`. |
+| `CLICKHOUSE_MEM_LIMIT` | default no limit | Memory limit of `clickhouse`. |
 
 ## n8n
 
-n8n is two containers. `n8n` is the editor, the webhooks and the schedules, and it runs every
-workflow itself. `n8n-runners` runs every Code node, in a container of its own with its own
-user, and reaches nothing but n8n's task broker on port 5679, which nothing routes. The two
-images come from two registries, and that is not a mistake: `docker.n8n.io` mirrors
-`n8nio/n8n` alone and answers `NAME_UNKNOWN` for the runners image, so that one comes from
-Docker Hub. **The two tags are one version**, and every upgrade moves both.
-
-Leave `n8n-runners` off and n8n falls back to its own default, running Code nodes inside its
-own container, which n8n calls internal mode and does not recommend for an instance that holds
-credentials. The interview warns, and the template follows the selection.
+n8n is two containers, always on together. `n8n` is the editor, the webhooks and the
+schedules, and it runs every workflow itself. `n8n-runners` runs every Code node, in a
+container of its own with its own user, and reaches nothing but n8n's task broker on port 5679,
+which nothing routes. n8n calls running Code nodes inside n8n itself internal mode, and does
+not recommend it for an instance that holds credentials, so the runners are part of the
+product. The two images come from two registries, and that is not a mistake: `docker.n8n.io`
+mirrors `n8nio/n8n` alone and answers `NAME_UNKNOWN` for the runners image, so that one comes
+from Docker Hub. **The two tags are one version**, and every upgrade moves both.
 
 **Its database is reached through the transaction door**, and two facts follow from that
 door alone. n8n applies its query time limit by sending `SET statement_timeout` on every
-connection it opens, and the transaction door discards a `SET`, so the template tells n8n to
-send none (`DB_POSTGRESDB_STATEMENT_TIMEOUT: 0`) and the manifest puts the same limit, n8n's
-own five minutes, on the `n8n` user instead, where Postgres applies it as each connection
-starts and the door cannot touch it. For the same reason **the schema stays `public`**: any
-other name is set by a `SET search_path` the door discards just the same, and n8n would read
-and write `public` regardless. `public` is n8n's default, so the manifest never names it.
+connection it opens, and the transaction door discards a `SET`. So n8n is told to send none
+(`DB_POSTGRESDB_STATEMENT_TIMEOUT: 0`), and the same limit, n8n's own five minutes, belongs on
+the `n8n` user instead, where Postgres applies it as each connection starts and the door cannot
+touch it. For the same reason **the schema stays `public`**: any other name is set by a
+`SET search_path` the door discards just the same, and n8n would read and write `public`
+regardless. `public` is n8n's default, so nothing names it.
 
 **`N8N_ENCRYPTION_KEY` is a one-way door.** Every saved credential is encrypted with it; it is
-not in the database and cannot be derived, so losing it loses every credential for good. The
-interview generates it before the first start, because n8n otherwise writes one of its own
-into the volume where you would have to go and find it, and the CLI names the line when it
-finishes: copy it off the machine, or switch on fort.
+not in the database and cannot be derived, so losing it loses every credential for good. Put it
+in `.env` before the first start, because n8n otherwise writes one of its own into the volume
+where you would have to go and find it. Keep a copy off the machine.
 
 **The volume needs no backup.** Postgres holds the workflows, the credentials and every
-execution, so fort's archive of Postgres covers them. `n8n_data` holds only what n8n rebuilds: the
+execution, so the archive of Postgres covers them. `n8n_data` holds only what n8n rebuilds: the
 binary data of an execution, which n8n prunes together with the execution that owns it; the
 settings file, which comes back from `.env` because the key is pinned there; the node cache;
 and any community node, which `N8N_REINSTALL_MISSING_PACKAGES` reinstalls from n8n's own
@@ -470,14 +425,13 @@ one-way door too: a later change of mode does not move the old files.
 
 **Behind traefik**, n8n is told there is exactly one proxy (`N8N_PROXY_HOPS: 1`), so it trusts
 one forwarded address and no more; a larger number would let a client forge its own. In local
-visibility the template also turns off the secure flag on n8n's cookie, because n8n refuses to
-serve its editor over plain HTTP from any hostname but `localhost` or `127.0.0.1`, and
-`n8n.localhost` is not exempt; Safari refuses regardless of hostname. Without traefik, n8n
-listens on `127.0.0.1:5678` and advertises its own default URLs, which are exactly that.
+visibility `SECURE_COOKIES=false` turns off the secure flag on n8n's cookie, because n8n
+refuses to serve its editor over plain HTTP from any hostname but `localhost` or `127.0.0.1`,
+and `n8n.localhost` is not exempt; Safari refuses regardless of hostname.
 
-**Time.** `TZ=UTC` sets the clock, as everywhere. `GENERIC_TIMEZONE` sets what a schedule
-means by 03:00, and defaults to `UTC` here rather than n8n's `America/New_York`; add the line
-to `.env` to change it for the instance, and any workflow may set its own.
+**Time.** The clock runs in UTC, the image's own default. `GENERIC_TIMEZONE` sets what a
+schedule means by 03:00, and defaults to `UTC` here rather than n8n's `America/New_York`; add
+the line to `.env` to change it for the instance, and any workflow may set its own.
 
 **Health.** The healthcheck asks `/healthz/readiness`, which answers 200 only once the
 database is connected, the migrations are done and the start has finished; `/healthz` answers
@@ -490,21 +444,27 @@ never runs by itself: both tags are exact. Before moving them, read every breaki
 entry between the two versions and take a fresh dump of the `n8n` database. A downgrade is a
 restore from that dump.
 
-**Two things only you can enforce.** A Postgres Trigger node holds its own credential and uses
+**One thing only you can enforce.** A Postgres Trigger node holds its own credential and uses
 `LISTEN`, which the transaction door drops silently: point that credential at
 `pgbouncer-session:5432`, never at the door n8n itself uses.
-And `N8N_PORT` in `.env` is userland's loopback-port variable, as for every HTTP container;
-n8n never sees it and always listens on 5678 inside its container.
 
 n8n runs in n8n's regular mode: no queue, no worker, no Redis. Pruning, the pool and every
 other number run at n8n's defaults.
+
+| Variable | Needed | Meaning |
+|---|---|---|
+| `N8N_DB_PASSWORD` | required | Password of the `n8n` user on Postgres, which owns the `n8n` database. |
+| `N8N_ENCRYPTION_KEY` | required | Key n8n encrypts saved credentials with. Keep a copy off the machine. |
+| `N8N_RUNNERS_AUTH_TOKEN` | required | Shared secret between n8n and its runners. |
+| `GENERIC_TIMEZONE` | default `UTC` | What a schedule's times mean. |
+| `N8N_MEM_LIMIT` | default no limit | Memory limit of `n8n`. |
+| `N8N_RUNNERS_MEM_LIMIT` | default no limit | Memory limit of `n8n-runners`. |
 
 ## Metabase
 
 Metabase is one container and one JVM: the web UI, the query engine, the scheduler, and the
 MCP server at `/api/metabase-mcp`. Its database, `metabase` on Postgres, holds every
 dashboard, question, user and setting, and the credentials of every data source you connect.
-Without traefik it listens on `127.0.0.1:3000`.
 
 **Its database is reached through the transaction door.** Nothing Metabase does against its
 own database needs the session door: it takes no advisory lock there, and an upgrade from
@@ -521,9 +481,8 @@ else.
 
 **`MB_ENCRYPTION_SECRET_KEY` is a one-way door.** It encrypts the secret columns of Metabase's
 database, the data-source credentials above all; without it they sit in clear in the database
-and in every archive of it. The interview generates one before the first start, or takes
-yours, so a database userland made is encrypted from its first boot. Metabase's five cases, as
-observed on v0.63.15:
+and in every archive of it. Put it in `.env` before the first start, so the database is
+encrypted from its first boot. Metabase's five cases, as observed on v0.63.15:
 
 | Its database | The key | What happens |
 |---|---|---|
@@ -536,20 +495,19 @@ observed on v0.63.15:
 The last two restart forever, and behind traefik they read as a 404 rather than an error,
 because traefik routes no container whose health is still `starting`. `remove-encryption` and
 `rotate-encryption-key` both need the key you lost, so the only way back is a dump taken
-before encryption was on, and for a database userland made there is none: every dashboard and
-question is rebuilt by hand. The CLI names the line when it finishes. Copy it off the machine,
-or switch on fort, which keeps `.env` in a bucket apart from the Postgres archives; an archive
-and the key that opens it in one place are one loss, not two.
+before encryption was on, and for a database encrypted from its first boot there is none:
+every dashboard and question is rebuilt by hand. Keep a copy of the key off the machine, and
+apart from the Postgres archives; an archive and the key that opens it in one place are one
+loss, not two.
 
 **Set the Site URL at install.** Admin → Settings → General → Site URL, to the address you
-reach it on: `https://metabase.DOMAIN` in public, `http://metabase.localhost` in local,
-`http://127.0.0.1:3000` without traefik. It is a row in Metabase's database, and the template
-does not set it. Metabase builds more than its email links from it: the OAuth discovery of its
-MCP server, every endpoint that server advertises and its `WWW-Authenticate` challenge all
-derive from it, so a client registered against one address stops matching when it changes,
-and registering again is the only fix. Set it before any MCP client registers, and again after
-`set VISIBILITY`. Behind traefik, Metabase sees traefik's plain-HTTP hop, so an address it
-guesses for itself can read `http://` in public visibility.
+reach it on: `https://metabase.DOMAIN` in public, `http://metabase.localhost` in local. It is a
+row in Metabase's database, and nothing here sets it. Metabase builds more than its email links
+from it: the OAuth discovery of its MCP server, every endpoint that server advertises and its
+`WWW-Authenticate` challenge all derive from it, so a client registered against one address
+stops matching when it changes, and registering again is the only fix. Set it before any MCP
+client registers, and again after changing `DOMAIN`. Behind traefik, Metabase sees traefik's
+plain-HTTP hop, so an address it guesses for itself can read `http://` in public visibility.
 
 **The MCP server** is part of the application, on every edition. A client signs in over OAuth
 2.0 against a server Metabase embeds, and its token carries the permissions of the account
@@ -561,17 +519,17 @@ already redirects, so the setting adds nothing, and it turns into a redirect loo
 `X-Forwarded-Proto` ever stops arriving.
 
 **Upgrading.** The tag is exact and moves only when this repo moves it, so a `git pull` that
-moves it in `compose/metabase.yml` is an upgrade, and it runs at the next apply. Metabase runs
-the new version's migrations at start, a failure is fatal, and a downgrade is not the way
-back: `migrate down` moves one major per run, from the newer binary, and cannot undo what
-happens at start rather than in a migration, so Metabase's own advice is to restore a dump.
-Before that apply:
+moves it in `compose/metabase.yml` is an upgrade, and it runs at the next `docker compose up`.
+Metabase runs the new version's migrations at start, a failure is fatal, and a downgrade is not
+the way back: `migrate down` moves one major per run, from the newer binary, and cannot undo
+what happens at start rather than in a migration, so Metabase's own advice is to restore a
+dump. Before that `up`:
 
 1. Read every release note between the two versions. What bites is rarely in the migrations:
    a major can move the sample database's engine, break the driver plugin API so a
    third-party driver needs rebuilding, or move the bundled JVM.
-2. Take a fresh archive with `./bootstrap fort backup`. Last night's is not one minute ago,
-   and this one is the rollback.
+2. Take a fresh archive with `docker exec archivist /archivist-entrypoint.sh backup`. Last
+   night's is not one minute ago, and this one is the rollback.
 3. Rehearse on another machine: restore that archive into a throwaway Postgres, start the new
    tag against it, and compare the counts of dashboards, questions and users, `/api/health`,
    and the schema version in the log. The rehearsal needs the key, since an encrypted
@@ -586,30 +544,35 @@ on a starved entropy pool, and that shows as a start that hangs rather than one 
 **The volume needs no backup.** Metabase downloads its own driver JARs into
 `metabase_plugins` at start. A third-party driver you put there by hand is the one thing that
 would not come back: keep your own copy, and expect to rebuild it after a major upgrade. The
-database is on Postgres, so fort archives it with everything else.
+database is on Postgres, so the archivist archives it with everything else.
 
-The two row limits, both connection pools and every other number run at Metabase's defaults.
+Both connection pools and every other number run at Metabase's defaults.
+
+| Variable | Needed | Meaning |
+|---|---|---|
+| `METABASE_DB_PASSWORD` | required | Password of the `metabase` user on Postgres, which owns the `metabase` database. |
+| `MB_ENCRYPTION_SECRET_KEY` | required | Key Metabase encrypts saved data-source credentials with. Keep a copy off the machine. |
+| `MB_AGGREGATED_QUERY_ROW_LIMIT` | default `10000` | Most rows an aggregated query returns. |
+| `MB_UNAGGREGATED_QUERY_ROW_LIMIT` | default `2000` | Most rows an unaggregated query returns. |
+| `METABASE_MEM_LIMIT` | default no limit | Memory limit of `metabase`. |
 
 ## Langfuse
 
-Langfuse is three containers. `langfuse-web` is the UI and the API your SDKs send traces to,
-and it runs every migration. `langfuse-worker` takes what was ingested off the queue and
-writes it to ClickHouse, and runs exports and Data Retention. `langfuse-redis` is that queue:
-langfuse's own Redis, which nothing else is ever pointed at. The web and worker images are
-**one version**, and every upgrade moves both.
-
-Leave `langfuse-worker` off and the web still takes traces, but nothing moves them from the
-queue into ClickHouse, so the UI stays empty. The interview warns. The worker starts only once
-the web is healthy, which is once both migrations are done.
+Langfuse is three containers, always on together. `langfuse-web` is the UI and the API your
+SDKs send traces to, and it runs every migration. `langfuse-worker` takes what was ingested
+off the queue and writes it to ClickHouse, and runs exports and Data Retention; without it the
+UI stays empty. `langfuse-redis` is that queue: langfuse's own Redis, which nothing else is
+ever pointed at. The web and worker images are **one version**, and every upgrade moves both.
+The worker starts only once the web is healthy, which is once both migrations are done.
 
 **Where everything lives.** Postgres holds what you configure: users, projects, prompts, API
 keys. ClickHouse holds what you see: traces, observations, scores, each in langfuse's own
-database and user, made by provisioning. Every event is written to your bucket first, under
-`events/`, and media and batch exports go to the same bucket under `media/` and `exports/`.
-The Redis volume holds only the queue, with append-only persistence on, so a restart loses no
-job, and `noeviction`, because langfuse requires it: an evicted key is a lost job. fort archives
-the two databases; the queue is not archived, since its jobs are minutes old and their events
-are in the bucket. ClickHouse runs as one container, which langfuse calls development-only, and
+database and user. Every event is written to your bucket first, under `events/`, and media and
+batch exports go to the same bucket under `media/` and `exports/`. The Redis volume holds only
+the queue, with append-only persistence on, so a restart loses no job, and `noeviction`,
+because langfuse requires it: an evicted key is a lost job. The archivist archives the two
+databases; the queue is not archived, since its jobs are minutes old and their events are in
+the bucket. ClickHouse runs as one container, which langfuse calls development-only, and
 *ClickHouse* says why userland accepts that.
 
 **Browsers and SDKs read and write media straight in your bucket through short-lived signed
@@ -618,43 +581,41 @@ Nothing is routed through traefik for it, and no CORS rule is needed: the UI sho
 with a signed link, not a script. Path-style requests are off, which AWS, Backblaze B2 and
 Cloudflare R2 all accept.
 
-**langfuse's access key is the one key here that may delete objects, because Data Retention
-deletes old traces and media nightly once you turn it on. It reaches langfuse's bucket and
-nothing else.** Retention is set per project, three days at least, and never touches exports:
-a lifecycle rule on `exports/` is the only thing that trims those, and like every rule it is
-yours. On a bucket with versioning on, Data Retention leaves delete markers and old versions
-behind, and a rule for those is yours too.
+**langfuse's access key may delete objects, because Data Retention deletes old traces and
+media nightly once you turn it on. It reaches langfuse's bucket and nothing else.** Retention
+is set per project, three days at least, and never touches exports: a lifecycle rule on
+`exports/` is the only thing that trims those, and like every rule it is yours. On a bucket
+with versioning on, Data Retention leaves delete markers and old versions behind, and a rule
+for those is yours too.
 
 **The databases.** `DATABASE_URL` goes through the transaction door. The migrations go through
 the session door, as `DIRECT_URL`, because Prisma holds a session-level advisory lock for the
-whole of a migration, which the transaction door cannot keep; `langfuse-web` requires both
-doors for that reason, and the worker only the first. On ClickHouse, the migrations make every table in
-langfuse's database. Langfuse requires both stores to run in UTC, which every container here
-does, and ClickHouse at 25.12 or later, which 26.8 is. Lightweight updates stay off, langfuse's
-default, so nothing is set on its ClickHouse user.
+whole of a migration, which the transaction door cannot keep; `langfuse-web` waits for both
+doors for that reason, and the worker only the first. On ClickHouse, the migrations make every
+table in langfuse's database. Langfuse requires both stores to run in UTC, which they do, and
+ClickHouse at 25.12 or later, which 26.8 is. Lightweight updates stay off, langfuse's default,
+so nothing is set on its ClickHouse user.
 
-**Accounts.** In local visibility signup is open, as langfuse ships it: the first visitor
-signs up and makes an organization. Only this machine resolves `langfuse.localhost`, but
-traefik listens on every interface in both visibilities, so on a network you share, anyone who
-sends that name to this machine reaches langfuse and can sign up too. In public visibility
-signup is off. The interview asks `LANGFUSE_INIT_USER_EMAIL` and generates
-`LANGFUSE_INIT_USER_PASSWORD`, and langfuse makes that account, the owner of an organization
-called `userland`, when it starts. Nobody else can make an account while signup is off,
-including someone you invite, so a teammate joins like this: add
-`LANGFUSE_AUTH_DISABLE_SIGNUP=false` to `.env`, apply, invite them and let them sign up,
-then remove the line and apply again. langfuse sends no email here, so a forgotten password
-cannot be reset from the sign-in page: langfuse's own way back is to rename the account in the
-database, sign up again, and move its memberships across. The first account is made once:
-changing the two lines later makes nothing and changes no password.
+**Accounts.** Sign-up is off in both visibilities. langfuse makes one account from
+`LANGFUSE_INIT_USER_EMAIL` and `LANGFUSE_INIT_USER_PASSWORD` when it starts, the owner of an
+organization called `userland`; the password must be at least eight characters. Sign-up is
+off even in local because traefik listens on every interface, so on a network you share,
+anyone who sends `langfuse.localhost` to this machine would reach langfuse and could sign up.
+Nobody else can make an account while sign-up is off, including someone you invite, so a
+teammate joins like this: add `LANGFUSE_AUTH_DISABLE_SIGNUP=false` to `.env`, run
+`docker compose up -d`, invite them and let them sign up, then remove the line and run it
+again. langfuse sends no email here, so a forgotten password cannot be reset from the sign-in
+page: langfuse's own way back is to rename the account in the database, sign up again, and
+move its memberships across. The first account is made once: changing the two lines later
+makes nothing and changes no password.
 
 **The keys.** `LANGFUSE_ENCRYPTION_KEY` encrypts the LLM API keys and integration credentials
-you save in langfuse, and it is a one-way door: losing it loses them, so the CLI names the line
-when it finishes. langfuse reads it as 64 hexadecimal characters, which is why it is asked as
-`hex`. `LANGFUSE_SALT` hashes API keys, and a new one costs nothing: langfuse checks a key the
-slow way once and re-hashes it with the new salt. A new `LANGFUSE_NEXTAUTH_SECRET` signs
-everyone out. The variables carry langfuse's name because `.env` is shared by every container,
-and `SALT` alone would claim a name any product might want; the template hands each to
-langfuse under its own name.
+you save in langfuse, and it is a one-way door: losing it loses them, so keep a copy off the
+machine. langfuse reads it as exactly 64 hexadecimal characters. `LANGFUSE_SALT` hashes API
+keys, and a new one costs nothing: langfuse checks a key the slow way once and re-hashes it with
+the new salt. A new `LANGFUSE_NEXTAUTH_SECRET` signs everyone out. The variables carry
+langfuse's name because `.env` is shared by every container, and `SALT` alone would claim a
+name any product might want; the compose file hands each to langfuse under its own name.
 
 **Health.** The web's healthcheck asks `/api/public/health` and the worker's `/api/health`.
 Both containers are told to listen on `0.0.0.0`: Docker sets `HOSTNAME` to the container's id,
@@ -665,26 +626,41 @@ for the first start's migrations; a fresh install took under half a minute.
 **Upgrading.** Both tags are exact. The web runs the new version's migrations when it starts,
 on Postgres and on ClickHouse, and langfuse documents which releases need more than that.
 Read the release notes between the two versions, take a fresh archive with
-`./bootstrap fort backup`, then move both tags together.
+`docker exec archivist /archivist-entrypoint.sh backup`, then move both tags together.
 
-Without traefik, langfuse listens on `127.0.0.1:3001`, since Metabase has 3000, and its links
-say so. `LANGFUSE_WEB_PORT` in `.env` is userland's loopback-port variable, as for every HTTP
-container; langfuse always listens on 3000 inside its container. Everything else, telemetry
-included, runs at langfuse's defaults.
+Everything else, telemetry included, runs at langfuse's defaults.
+
+| Variable | Needed | Meaning |
+|---|---|---|
+| `LANGFUSE_DB_PASSWORD` | required | Password of the `langfuse` user on Postgres, which owns the `langfuse` database. |
+| `LANGFUSE_CLICKHOUSE_PASSWORD` | required | Password of the `langfuse` user on ClickHouse, which reaches the `langfuse` database and nothing else. |
+| `LANGFUSE_ENCRYPTION_KEY` | required | 64 hex characters. Key langfuse encrypts saved LLM and integration credentials with. Keep a copy off the machine. |
+| `LANGFUSE_SALT` | required | Salt langfuse hashes API keys with. |
+| `LANGFUSE_NEXTAUTH_SECRET` | required | Secret langfuse signs sign-in sessions with. |
+| `LANGFUSE_REDIS_PASSWORD` | required | Password of langfuse's own Redis. |
+| `LANGFUSE_INIT_USER_EMAIL` | required | Email address of the first account. |
+| `LANGFUSE_INIT_USER_PASSWORD` | required | Password of the first account, eight characters or more. |
+| `LANGFUSE_AUTH_DISABLE_SIGNUP` | default `true` | `false` opens sign-up while a teammate joins. |
+| `LANGFUSE_S3_BUCKET` | required | Name of langfuse's bucket. |
+| `LANGFUSE_S3_REGION` | required | Region of the bucket, as the provider names it. |
+| `LANGFUSE_S3_ENDPOINT` | required | Scheme and host the bucket is reached at, with no path. |
+| `LANGFUSE_S3_ACCESS_KEY_ID` | required | Access key that reaches this bucket and nothing else. It may list the bucket and get, put and delete objects. |
+| `LANGFUSE_S3_SECRET_ACCESS_KEY` | required | Its secret. |
+| `LANGFUSE_WEB_MEM_LIMIT` | default no limit | Memory limit of `langfuse-web`. |
+| `LANGFUSE_WORKER_MEM_LIMIT` | default no limit | Memory limit of `langfuse-worker`. |
+| `LANGFUSE_REDIS_MEM_LIMIT` | default no limit | Memory limit of `langfuse-redis`. |
 
 ## Twenty
 
-Twenty is three containers. `twenty-server` is the UI and the API, and it runs every
-migration when it starts. `twenty-worker` runs the background jobs: imports, workflows, mail
-and calendar sync, and the scheduled jobs the server registers each time it starts.
-`twenty-redis` holds the queue and the cache: twenty's own Redis, which nothing else is ever
-pointed at, so its pub/sub is heard by nothing else either. It runs `noeviction`, because an
-evicted key is a lost job, with append-only persistence, so a restart loses no queued job.
-The server and worker run one image at **one version**, and every upgrade moves both.
-
-Leave `twenty-worker` off and the UI still works, but no job runs: nothing imports, no
-workflow fires, and what was queued waits in Redis. The interview warns. The worker starts
-only once the server is healthy, which is once its migrations are done.
+Twenty is three containers, always on together. `twenty-server` is the UI and the API, and it
+runs every migration when it starts. `twenty-worker` runs the background jobs: imports,
+workflows, mail and calendar sync, and the scheduled jobs the server registers each time it
+starts; without it nothing imports and no workflow fires. `twenty-redis` holds the queue and the
+cache: twenty's own Redis, which nothing else is ever pointed at, so its pub/sub is heard by
+nothing else either. It runs `noeviction`, because an evicted key is a lost job, with
+append-only persistence, so a restart loses no queued job. The server and worker run one image
+at **one version**, and every upgrade moves both. The worker starts only once the server is
+healthy, which is once its migrations are done.
 
 **The session door, and why.** twenty holds a session-scoped advisory lock across a callback,
 in workspace deletion and in the job that cleans up suspended workspaces. On the transaction
@@ -732,9 +708,9 @@ AWS, Backblaze B2 and Cloudflare R2 all accept them.
 
 **twenty's access key may delete anything in its bucket**, because twenty moves a file by
 copying it and deleting the original, and deletes a file when you delete its attachment. It
-reaches twenty's bucket and nothing else. fort archives twenty's database, not the bucket, so
-a file you delete in twenty is gone even while an older snapshot of the database still names
-it.
+reaches twenty's bucket and nothing else. The archivist archives twenty's database, not the
+bucket, so a file you delete in twenty is gone even while an older snapshot of the database
+still names it.
 
 **Accounts.** The first person to sign up creates the workspace and becomes twenty's server
 admin. After that nobody signs up without an invitation, since twenty lets only a server admin
@@ -749,138 +725,134 @@ driver writes each message to its log instead, so a password reset or an invitat
 
 **The keys.** `TWENTY_ENCRYPTION_KEY` encrypts the keys twenty signs sessions with and every
 credential you save in it, such as a connected mail account, and it is a one-way door: losing
-it loses them and signs everyone out, so the CLI names the line when it finishes. twenty reads
-it as `ENCRYPTION_KEY`; the variable carries twenty's name because `.env` is shared by every
+it loses them and signs everyone out, so keep a copy off the machine. twenty reads it as
+`ENCRYPTION_KEY`; the variable carries twenty's name because `.env` is shared by every
 container. twenty's older `APP_SECRET` is read only by an instance that predates that key, so
-it is neither asked nor written. To change the key, twenty's own rotation reads the old one
-from `FALLBACK_ENCRYPTION_KEY`. `TWENTY_REDIS_PASSWORD` travels inside `REDIS_URL`, the only
-way twenty takes its Redis, so it is asked as a `database-password`.
+it is not set. To change the key, twenty's own rotation reads the old one from
+`FALLBACK_ENCRYPTION_KEY`. `TWENTY_REDIS_PASSWORD` travels inside `REDIS_URL`, the only way
+twenty takes its Redis, so it may hold only URL-safe characters.
 
 **Health.** The server's healthcheck asks `/healthz` with the image's `curl`. The worker serves
-nothing over HTTP and nothing requires it, so it has no healthcheck.
+nothing over HTTP and nothing waits for it, so it has no healthcheck.
 
 **Upgrading.** The tag is exact, never `latest`. Each time the server starts it runs twenty's
 upgrade before it serves, which migrates the core schema and every workspace, and it starts
 anyway, with a warning in its log, when a workspace fails to migrate. Read the release notes
-between the two versions, take a fresh archive with `./bootstrap fort backup`, then move the
-tag, which moves both containers.
+between the two versions, take a fresh archive with
+`docker exec archivist /archivist-entrypoint.sh backup`, then move the tag, which moves both
+containers.
 
-Without traefik, twenty listens on `127.0.0.1:3002`, since Metabase has 3000 and Langfuse
-3001, and its links say so. `TWENTY_SERVER_PORT` in `.env` is userland's loopback-port
-variable, as for every HTTP container; twenty always listens on 3000 inside its container.
 Everything else, telemetry and the marketplace's catalogue included, runs at twenty's defaults.
 
-## fort
+| Variable | Needed | Meaning |
+|---|---|---|
+| `TWENTY_DB_PASSWORD` | required | Password of the `twenty` user on Postgres, which owns the `twenty` database. |
+| `TWENTY_ENCRYPTION_KEY` | required | Key twenty encrypts its signing keys and saved credentials with. Keep a copy off the machine. |
+| `TWENTY_REDIS_PASSWORD` | required | Password of twenty's own Redis. URL-safe characters only. |
+| `TWENTY_S3_BUCKET` | required | Name of twenty's bucket. |
+| `TWENTY_S3_REGION` | required | Region of the bucket, as the provider names it. |
+| `TWENTY_S3_ENDPOINT` | required | Scheme and host the bucket is reached at, with no path. |
+| `TWENTY_S3_ACCESS_KEY_ID` | required | Access key that reaches this bucket and nothing else. It may list the bucket and get, put and delete objects. |
+| `TWENTY_S3_SECRET_ACCESS_KEY` | required | Its secret. |
+| `TWENTY_SERVER_MEM_LIMIT` | default no limit | Memory limit of `twenty-server`. |
+| `TWENTY_WORKER_MEM_LIMIT` | default no limit | Memory limit of `twenty-worker`. |
+| `TWENTY_REDIS_MEM_LIMIT` | default no limit | Memory limit of `twenty-redis`. |
 
-fort keeps off this host what you cannot lose with it: the files you name, and every database
-on Postgres and ClickHouse while each is on. It is one container and it requires nothing; it
-is the only thing here that backs up something outside userland, and the only thing that backs
-up anything at all.
+## The archivist
 
-`FORT_FILES` is the list: absolute paths, separated by colons. Switching fort on puts this
-clone's `.env` at the head of it, because that one file holds every secret of every container
-you switched on. `./bootstrap fort add PATH…` adds more and refuses a path that is not on this
-host; `remove PATH…` stops keeping one, and refuses this clone's `.env` while fort is on. Each
-listed path has its **directory** mounted read-only at the same place under `/files`, so fort
-can read the file and can write nothing.
+The archivist keeps off this host what you cannot lose with it: every database on Postgres and
+ClickHouse. It is one container and it needs no other product; it is the only thing here that
+backs up anything at all. It is changing: each datastore will write its own dumps into a
+backup folder, and the archivist will only encrypt, upload and restore them.
 
-**Postgres.** While `postgres-18` is on, every run archives the globals and every database but
-`postgres`, read from `pg_database`, so **no database is ever named**: one is archived from the
-day it exists, and one that is dropped stops appearing. Each is `pg_dump` in custom format
-streamed straight into restic, so nothing is staged on disk, and a dump that fails saves no
-snapshot. The dump is left uncompressed, because restic compresses what it stores and finds
-far more to deduplicate in a dump that is not already compressed. fort connects as the
-superuser, to `postgres-18:5432` directly, with the `pg_dump` 18 its image carries; the client
-has to match the server's major. The globals file is there because a user is a **cluster**
-object: it lives outside every database, so `pg_dump` does not carry it, and a database restored
-into a Postgres that holds no users fails on the first `ALTER TABLE … OWNER TO`. That one file
-carries the stored password verifier of every user on the server, so it is as sensitive as the
-data.
+**Today it names `postgres-18` and `clickhouse` always.** Compose cannot tell it which of them
+is on, so a run with either off fails that part and keeps the other. It keeps no file: the
+mounts that let it read one went with the Go CLI, so the file part of every run reports that
+there is nothing to keep, and the run exits non-zero.
 
-**ClickHouse.** While `clickhouse` is on, every run archives every database but ClickHouse's
-own three, `system`, `information_schema` and `INFORMATION_SCHEMA`; `default` is included.
-fort asks ClickHouse over HTTP, as `default`, to `BACKUP DATABASE … TO File(…)` into its backup
+**Postgres.** Every run archives the globals and every database but `postgres`, read from
+`pg_database`, so **no database is ever named**: one is archived from the day it exists, and
+one that is dropped stops appearing. Each is `pg_dump` in custom format streamed straight into
+restic, so nothing is staged on disk, and a dump that fails saves no snapshot. The dump is left
+uncompressed, because restic compresses what it stores and finds far more to deduplicate in a
+dump that is not already compressed. The archivist connects as the superuser, to
+`postgres-18:5432` directly, with the `pg_dump` 18 its image carries; the client has to match
+the server's major. The globals file is there because a user is a **cluster** object: it lives
+outside every database, so `pg_dump` does not carry it, and a database restored into a Postgres
+that holds no users fails on the first `ALTER TABLE … OWNER TO`. That one file carries the
+stored password verifier of every user on the server, so it is as sensitive as the data.
+
+**ClickHouse.** Every run archives every database but ClickHouse's own three, `system`,
+`information_schema` and `INFORMATION_SCHEMA`; `default` is included. The archivist asks
+ClickHouse over HTTP, as `default`, to `BACKUP DATABASE … TO File(…)` into its backup
 directory, which is the volume `clickhouse_backups` that both containers mount. restic reads
-what ClickHouse wrote there, and fort empties it again. **The host needs free disk for one full
-copy of ClickHouse's databases while a run is going.** fort hands that directory to uid 101,
-the ClickHouse image's own user, before each run, because a volume Docker creates belongs to
-root. The password reaches `curl` on its standard input, never on a command line. No file of
-users is kept, because provisioning makes every ClickHouse user from `.env`. ClickHouse can
-write a backup to S3 by itself, and fort does not use that: a backup to S3 deletes its own lock
-file when it finishes, so a key that may not delete fails every one, and ClickHouse cannot
-encrypt an archive it writes to S3 at all.
+what ClickHouse wrote there, and the archivist empties it again. **The host needs free disk for
+one full copy of ClickHouse's databases while a run is going.** The archivist hands that
+directory to uid 101, the ClickHouse image's own user, before each run, because a volume Docker
+creates belongs to root. The password reaches `curl` on its standard input, never on a command
+line. No file of users is kept, because every ClickHouse user is made from `.env`. ClickHouse
+can write a backup to S3 by itself, and the archivist does not use that: a backup to S3 deletes
+its own lock file when it finishes, so a key that may not delete fails every one, and
+ClickHouse cannot encrypt an archive it writes to S3 at all.
 
 **What is in the bucket.** restic snapshots, and nothing you can read without the master key.
 Each object is named after the hash of its own contents, so nothing is ever overwritten and
 nothing is ever a file path; every backup adds snapshots, and the list of snapshots is the
-history. One run makes one snapshot tagged `files`, one tagged `postgres` for the globals and
-for each database, and one tagged `clickhouse` holding every ClickHouse database;
-`docker exec fort restic snapshots` lists them. There is no `.gpg` next to a familiar name to
-grab, and equally no way to get anything back except through restic with the key.
+history. One run makes one snapshot tagged `postgres` for the globals and for each database,
+and one tagged `clickhouse` holding every ClickHouse database;
+`docker exec archivist restic snapshots` lists them. There is no `.gpg` next to a familiar name
+to grab, and equally no way to get anything back except through restic with the key.
 
 **The master key is the repository password**, read out of your secret store at the start of
-every run by `scripts/fort-key`, held in memory, and written nowhere — not in `.env`, not on
-disk, not in the bucket, which holds it only as ciphertext that the password unlocks. So
-**replacing the parameter's value does not re-key anything; it locks fort out of its own
-archive.** That is why the offer adopts a parameter that exists and never overwrites it.
+every run by `scripts/archivist-key`, held in memory, and written nowhere: not in `.env`, not
+on disk, not in the bucket, which holds it only as ciphertext that the password unlocks. So
+**replacing the parameter's value does not re-key anything; it locks the archivist out of its
+own archive.** Never overwrite it.
 
-**Retention: never prune, nothing expires.** fort only ever adds. Every run is a full backup,
-so each snapshot restores alone, but restic stores only the chunks it has not seen before, so
-a run adds roughly what changed since the last one. A large database that did not change adds
-almost nothing. A small one is stored whole again whenever it changes at all, because it is
-only a chunk or two, and the globals file changes on every run. **The archive keeps everything,
-including what you delete**: a row dropped from a database, a trace langfuse's own Data
-Retention removes, a file you stop keeping — every earlier snapshot still holds it. `forget` and
+**Retention: never prune, nothing expires.** The archivist only ever adds. Every run is a full
+backup, so each snapshot restores alone, but restic stores only the chunks it has not seen
+before, so a run adds roughly what changed since the last one. A large database that did not
+change adds almost nothing. A small one is stored whole again whenever it changes at all,
+because it is only a chunk or two, and the globals file changes on every run. **The archive
+keeps everything, including what you delete**: a row dropped from a database, a trace
+langfuse's own Data Retention removes: every earlier snapshot still holds it. `forget` and
 `prune`, which are how restic reclaims space, need delete rights the key does not have, and so
 do `unlock --remove-all`, `rewrite` and `tag`: if you ever want them, restic's own guidance is a
 separate, well-secured machine with a delete-capable key, never this host. And **set no
 lifecycle rule on this bucket**: see *Object store*.
 
-**Versioning guards against overwrite, not loss.** fort's key can put an object but not delete
-one — and a put overwrites. A host that has been broken into can therefore write garbage over
-any object under its own name, using fort's key, and restic sends nothing that would stop it.
-With versioning on, the original is still there as an older version and you put it back by hand
-with an identity of your own. Because restic never overwrites anything, **an older version in
-this bucket means something other than restic wrote there.** `restic check` will tell you the
-archive is damaged, because an object's contents no longer match its name, but it cannot repair
-what it does not have.
+**Versioning guards against overwrite, not loss.** The archivist's key can put an object but
+not delete one, and a put overwrites. A host that has been broken into can therefore write
+garbage over any object under its own name, using the archivist's key, and restic sends nothing
+that would stop it. With versioning on, the original is still there as an older version and you
+put it back by hand with an identity of your own. Because restic never overwrites anything, **an
+older version in this bucket means something other than restic wrote there.** `restic check`
+will tell you the archive is damaged, because an object's contents no longer match its name,
+but it cannot repair what it does not have.
 
-**The image is this repo's own**, the only one it builds, so `apply` passes `--build`. It is
-`restic/restic:0.19.1` plus `ssmget`, a small Go program built in a stage of its own that reads
-the one parameter through Amazon's own library, and Alpine's `curl` and `postgresql18-client`.
-The pin matters: a listed file that has gone missing exits 3 only since restic 0.19.0, and before
-that it was a silent success. Process 1 is busybox `crond`, which the image already carries,
-reading `FORT_SCHEDULE` (`@daily` unless you set it). crond hands a job almost no environment, so
-the entrypoint saves its own with `export -p` into `/run/fort.env`, mode 600, and the scheduled
-line sources it. `./bootstrap fort backup` runs the same backup inside the running container,
-now, and every apply ends with one.
+**The image is this repo's own**, the only one it builds. `pull_policy: build` makes every
+`docker compose up` build it, which is quick when nothing changed, and recreates the container
+only when the image did. It is `restic/restic:0.19.1` plus `ssmget`, a small Go program built in
+a stage of its own that reads the one parameter through Amazon's own library, and Alpine's
+`curl` and `postgresql18-client`. Process 1 is busybox `crond`, which the image already carries,
+reading `ARCHIVIST_SCHEDULE` (`@daily` unless you set it). crond hands a job almost no
+environment, so the entrypoint saves its own with `export -p` into `/run/archivist.env`, mode
+600, and the scheduled line sources it. `docker exec archivist /archivist-entrypoint.sh backup`
+runs the same backup now.
 
 **A part that fails fails the run, and the rest is still kept.** A database whose dump fails
-saves no snapshot, and a ClickHouse that cannot be reached saves none of its databases; the
-files and every other database are kept regardless, and the run exits non-zero naming what was
-not. A missing listed file is restic's own case: restic backs up what it can find, warns, and
-exits 3, so the partial snapshot is real and it is now the latest, and the file that was missing
-is not in it. A restore lists every path it is about to write before it writes anything, which
-is where you see the gap; an earlier snapshot still holds the file. **Nobody is told when a
-scheduled run fails**: until userland runs something that watches, `docker logs fort` and the
-snapshot list are the evidence.
+saves no snapshot, and a ClickHouse that cannot be reached saves none of its databases; every
+other database is kept regardless, and the run exits non-zero naming what was not. **Nobody is
+told when a scheduled run fails**: until userland runs something that watches,
+`docker logs archivist` and the snapshot list are the evidence.
 
-**Files come back from the bucket and the key alone.** `./bootstrap fort restore` works in a
-clone with no `.env` at all — which is the case a restore is for. It asks where the bucket and
-the master key are, builds the image, then runs it twice with no host mount: once to list the
-latest `files` snapshot, so you see every path with the time that file was last changed, and
-once to stream a tar which the CLI unpacks onto `/`. Every file lands back at its own absolute
-path with its own mode and time, so `.env` comes back at 600. It assumes the host is laid out as
-the old one was; run it as a user that may write those paths. Then `./bootstrap` brings the
-stack up against what came back, and provisioning converges each database user to the password
-the restored `.env` holds.
-
-**Databases come back by hand, through the running fort, and a restore nobody has rehearsed is
-not a backup.** Into a throwaway database on the running Postgres, which is the drill:
+**Databases come back by hand, through the running archivist, and a restore nobody has
+rehearsed is not a backup.** Into a throwaway database on the running Postgres, which is the
+drill:
 
 ```sh
 docker exec postgres-18 createdb -U postgres drill
-docker exec fort restic dump --path /postgres/DATABASE.dump latest /postgres/DATABASE.dump \
+docker exec archivist restic dump --path /postgres/DATABASE.dump latest /postgres/DATABASE.dump \
   | docker exec -i postgres-18 pg_restore -U postgres --no-owner --no-acl -d drill
 ```
 
@@ -891,194 +863,140 @@ only error it prints is that the image's own `postgres` user already exists. On 
 a database of another name:
 
 ```sh
-docker exec fort restic dump --tag clickhouse latest:/clickhouse /DATABASE --archive tar \
+docker exec archivist restic dump --tag clickhouse latest:/clickhouse /DATABASE --archive tar \
   | docker exec -i -u clickhouse clickhouse tar -x -C /var/lib/clickhouse/backups
 docker exec clickhouse clickhouse-client -q "RESTORE DATABASE DATABASE AS drill FROM File('DATABASE')"
 ```
 
-fort's next run empties the backup directory again. An earlier snapshot takes its ID in place
-of `latest`, and `docker exec fort restic snapshots --path /postgres/DATABASE.dump` lists one
-database's.
+The archivist's next run empties the backup directory again. An earlier snapshot takes its ID
+in place of `latest`, and `docker exec archivist restic snapshots --path /postgres/DATABASE.dump`
+lists one database's.
 
-**If you ran `pg-backup`.** Until 2026-09-23 Postgres had a fifth container, `pg-backup`, which
-wrote gpg-encrypted dumps into a bucket of its own. The next run drops it from the selection and
-says so. Its archives stay in that bucket, and `BACKUP_PASSPHRASE`, which is the only way to read
-them, stays in `.env` with the `PG_BACKUP_` lines, because nothing here removes a secret that is
-the last key to an archive. Delete those lines when you no longer need those archives.
+It also reads `POSTGRES_PASSWORD` and `CLICKHOUSE_PASSWORD`, under *Postgres* and *ClickHouse*.
+
+| Variable | Needed | Meaning |
+|---|---|---|
+| `ARCHIVIST_S3_BUCKET` | required | Name of the archivist's bucket. Versioned, with no lifecycle rule. |
+| `ARCHIVIST_S3_REGION` | required | Region of the bucket, as the provider names it. |
+| `ARCHIVIST_S3_ENDPOINT` | required | Scheme and host the bucket is reached at, with no path. |
+| `ARCHIVIST_S3_ACCESS_KEY_ID` | required | Access key that reaches this bucket and nothing else. It may list the bucket and get and put objects, and delete under `locks/` and nowhere else. |
+| `ARCHIVIST_S3_SECRET_ACCESS_KEY` | required | Its secret. |
+| `ARCHIVIST_KEY_PROVIDER` | required | Secret store the master key lives in: `ssm`, AWS Parameter Store, the one there is. |
+| `ARCHIVIST_KEY_NAME` | required | Name of the `SecureString` parameter that holds the master key. |
+| `ARCHIVIST_KEY_REGION` | required | Region of the parameter. |
+| `ARCHIVIST_KEY_ACCESS_KEY_ID` | required | Access key that may read this one parameter and nothing else. |
+| `ARCHIVIST_KEY_SECRET_ACCESS_KEY` | required | Its secret. |
+| `ARCHIVIST_SCHEDULE` | default `@daily` | When the backup runs, in cron's terms. |
+| `ARCHIVIST_MEM_LIMIT` | default no limit | Memory limit of `archivist`. |
 
 ## For a consumer
 
-A **consumer** is a project of your own that uses userland and is not part of it. The
-**Contract** is a short summary to glance at while you start one: every apply ends with it,
-and `./bootstrap contract` prints it again. It lists each container that is on, with an
-address where there is something to reach:
-
-```
-The Contract: what is on, and how to reach it.
-
-  metabase               http://metabase.localhost
-  pgbouncer-session      pgbouncer-session:5432 on userland_postgres
-  pgbouncer-transaction  pgbouncer-transaction:5432 on userland_postgres
-  postgres-18
-  traefik                network userland_traefik, entrypoint web, hosts NAME.localhost
-```
+A **consumer** is a project of your own that uses userland and is not part of it.
 
 - **Two networks**, `userland_postgres` and `userland_traefik`, which the consumer's compose
   file declares as `external: true` and joins.
-- **Two doors to Postgres**, both on port 5432, and the DSN names one. `pgbouncer-transaction`
-  is the default, for a consumer that keeps no state on a connection between transactions.
-  `pgbouncer-session` is for one that does, whether a `SET`, a `LISTEN`, a session-scoped
-  advisory lock or a prepared statement it reuses; it pins one Postgres connection for as
-  long as the consumer holds its own, so the consumer must release connections promptly.
-  The session door lends up to 100 connections per database, Postgres's own limit, so
-  there Postgres decides and not the door; the transaction door lends pgbouncer's 20.
+- **Two doors to Postgres**, `pgbouncer-transaction:5432` and `pgbouncer-session:5432`, and
+  the DSN names one. `pgbouncer-transaction` is the default, for a consumer that keeps no state
+  on a connection between transactions. `pgbouncer-session` is for one that does, whether a
+  `SET`, a `LISTEN`, a session-scoped advisory lock or a prepared statement it reuses; it pins
+  one Postgres connection for as long as the consumer holds its own, so the consumer must
+  release connections promptly. The session door lends up to 100 connections per database,
+  Postgres's own limit, so there Postgres decides and not the door; the transaction door lends
+  pgbouncer's 20. `postgres-18` itself is not on `userland_postgres`, so the doors are the only
+  way in.
 - **traefik** routes a consumer by the labels on its container. `NAME` and `PORT` are the
-  consumer's own. In local visibility:
+  consumer's own, and `DOMAIN` is `localhost` in local. The same four labels serve both
+  visibilities. In public, the certificate comes by itself and plain HTTP is redirected,
+  because TLS sits on traefik's entrypoint:
 
   ```yaml
   labels:
     - traefik.enable=true
-    - traefik.http.routers.NAME.rule=Host(`NAME.localhost`)
-    - traefik.http.routers.NAME.entrypoints=web
+    - traefik.http.routers.NAME.rule=Host(`NAME.DOMAIN`)
     - traefik.http.services.NAME.loadbalancer.server.port=PORT
     - traefik.docker.network=userland_traefik
   ```
 
-  In public, the rule names your domain, the entrypoint is `websecure`, and one more label
-  names the certificate resolver. `web` redirects to `websecure` on its own, so one router
-  is enough:
-
-  ```yaml
-  labels:
-    - traefik.enable=true
-    - traefik.http.routers.NAME.rule=Host(`NAME.example.com`)
-    - traefik.http.routers.NAME.entrypoints=websecure
-    - traefik.http.routers.NAME.tls.certresolver=letsencrypt
-    - traefik.http.services.NAME.loadbalancer.server.port=PORT
-    - traefik.docker.network=userland_traefik
-  ```
-
-`./bootstrap postgres database add NAME` makes the consumer's database and a user of the same
-name that owns it, with `CONNECT` revoked from everyone else, `CREATE` on `public` revoked,
-and the `vector` extension installed, then prints the DSN once and the network the consumer
-joins to reach it. userland keeps no copy of that password you can read back: paste it into
-the consumer's own gitignored `.env`, and keep the record where you keep such things. A name
-that exists stops the verb rather than overwriting, and a product's database is refused,
-since provisioning makes those. `--session` prints a DSN that names the session door
-instead. `--api` adds the PostgREST recipe inside the database, an `api` schema owned by the
-consumer, an authenticator user that holds no table rights and inherits none, an anonymous
-user that cannot log in, and an event trigger that tells PostgREST to reload its schema cache
-after a migration, and prints a second DSN for PostgREST that names `pgbouncer-session`,
-whichever door the first names, because PostgREST hears that reload on a `LISTEN`.
-
-`./bootstrap postgres database remove NAME` drops the database and every user the recipe
-made, after naming them and asking. Neither ClickHouse nor a Redis has an address in the
-Contract: ClickHouse until a consumer needs one, and Redis never, since a product that needs
+Nothing makes a consumer's database yet. A helper that makes one, with a user of the same name
+that owns it, and prints the DSN once, comes next. Neither ClickHouse nor a Redis is offered to
+a consumer: ClickHouse until a consumer needs one, and Redis never, since a product that needs
 Redis runs its own, and so does a consumer.
 
-## check
+## Tests
 
-`check` renders with every container on, in both visibilities, runs
-`docker compose config`, and asserts:
+The tests are [bats](https://github.com/bats-core/bats-core) files in `test/`. They read what
+compose makes of the files, `docker compose config`, and assert:
 
-- every container has a template and every template is a container;
-- no template writes a key the generator owns, and every template's `environment` opens
-  with the merge line that carries `TZ=UTC`;
-- every variable a template reads without a default is asked by the manifest, is a
-  database password, or is one an external kind supplies;
-- `VARIABLES.md` matches the manifest and templates;
-- compose accepts the rendered file;
-- `TZ=UTC` reaches every service;
-- every container something requires has a healthcheck, since `depends_on` waits on it;
-- every named volume is declared on the container that mounts it, and vice versa.
+- traefik runs alone, and each product runs with only the products it needs;
+- a product without one it needs is refused;
+- every product runs together, in local and in public;
+- `DOMAIN`, `SCHEME` and `SECURE_COOKIES` are required, and so are `CERT_EMAIL` and
+  `DNS_PROVIDER` in public;
+- no port is published but traefik's 80, and its 443 in public;
+- every container another waits on has a healthcheck;
+- consumers join `userland_postgres` and `userland_traefik`, and `postgres-18` is on neither;
+- every container is named as its service, and takes its memory limit from its own variable;
+- this README names every variable compose reports;
+- every file in `compose/` is a product the tests know, or `public.yml`.
 
-It runs in CI on every pull request and on every push to `main`
-([`.github/workflows/check.yml`](.github/workflows/check.yml)), followed by `go test`.
-The manifest itself is refused on load for a container in two products, a volume declared
-by two containers, two containers on one loopback port, an ask whose type or `when` the
-interview does not know, or an external dependency of a kind it does not know or with a
-property its kind has no use for.
+They run from docker, as CI runs them. The repo is mounted at its own path, because a test that
+starts a container hands bind-mount paths to the host's docker:
+
+```sh
+docker run --rm --volume /var/run/docker.sock:/var/run/docker.sock --volume "$PWD":"$PWD" --workdir "$PWD" docker:29-cli sh -c 'apk add --quiet --no-cache bats jq && bats test'
+```
+
+ShellCheck reads every script and test, from docker too:
+
+```sh
+docker run --rm --volume "$PWD":/mnt --workdir /mnt koalaman/shellcheck:stable scripts/* test/*.bats
+```
+
+Both run in CI on every pull request and on every push to `main`
+([`.github/workflows/check.yml`](.github/workflows/check.yml)).
 
 ## Layout
 
 | Path | What lives there |
 |---|---|
-| `bootstrap` | Builds the CLI inside docker and runs it. The one command; docker is all it needs. |
-| `manifest.json` | What every container depends on and what it needs asked. The CLI trusts nothing else. |
-| `VARIABLES.md` | Every variable `.env` may hold, by container. Generated; `check` fails when it is stale. |
-| `compose/` | One template per product. The CLI renders `compose.yml` from them; nothing is ever run from inside it. |
-| `scripts/` | Shell that runs inside a container — fort's entrypoint, which is its schedule and its backup, and its password command. Nothing here runs on the host. |
-| `Dockerfile` | fort's image, the only one this repo builds: restic, a reader for the secret store, and the Postgres and HTTP clients its backup needs. |
-| `ssmget/` | That reader, a Go module of its own so the CLI never takes a cloud SDK as a dependency. |
-| `initdb/` | First-start initialisation for a datastore. Runs once, against an empty volume, and never again. Empty today: what used to live here is provisioned instead. |
+| `compose.yml` | traefik, always on, and always first in `COMPOSE_FILE`. |
+| `compose/` | One file per product, and `public.yml`, which turns traefik public. |
+| `test/` | The bats tests. |
+| `scripts/` | Shell that runs inside a container: the archivist's entrypoint, which is its schedule and its backup, and its password command. Nothing here runs on the host. |
+| `bin/` | Helpers that run on the host, in POSIX sh, needing only docker. None yet. |
+| `Dockerfile` | The archivist's image, the only one this repo builds: restic, a reader for the secret store, and the Postgres and HTTP clients its backup needs. |
+| `ssmget/` | That reader, a small Go module of its own. |
+| `initdb/` | First-start initialisation for Postgres. Runs once, against an empty volume, and never again. Empty today. |
 | `config/` | Configuration files a container mounts, checked in because they hold nothing secret. pgadmin's one server is the first. |
-| `main.go`, `internal/` | The CLI, in Go, on the standard library plus [huh](https://github.com/charmbracelet/huh) for the prompts and [cobra](https://github.com/spf13/cobra) for the verbs. |
+| `docs/adr/` | Decisions that are hard to reverse, and why they were made. |
 
-`compose.yml`, `.env` and the `userland` binary are yours and untracked. Support
-directories are grouped **by kind, at the root** — `scripts/`, never `metabase/scripts/`.
-One container's files are spread across several of them on purpose: the thing you switch
-on and off is a container, not a folder.
+`.env` is yours and untracked. Support directories are grouped **by kind, at the root**:
+`scripts/`, never `metabase/scripts/`.
 
-## Adding a container
+## Adding a product
 
-A container is a block in `manifest.json` and a `{{ define "<container>" }}` in its
-product's `compose/<product>.yml`. `./bootstrap new PRODUCT CONTAINER…` writes both with
-placeholders and regenerates `VARIABLES.md`, so you start green; `check` then tells you what
-is missing as you fill them in.
+A product is one file, `compose/<product>.yml`. In it, every container:
 
-### The manifest
+- sets `container_name` to its service's name, and `restart: unless-stopped`;
+- waits in `depends_on`, with `condition: service_healthy`, for every container it needs,
+  even one in another product. Compose then refuses the product without that one;
+- joins only the networks it talks on. A product gets a network of its own only when its
+  containers talk to each other. An HTTP container joins `traefik` and carries the four labels
+  under *For a consumer*, with `${DOMAIN:?}` in its rule;
+- publishes no port;
+- sets `mem_limit: ${<CONTAINER>_MEM_LIMIT:-0}`;
+- reads a variable with no safe default as `${VAR:?}`, so compose refuses without it, and one
+  with a default as `${VAR:-value}`;
+- has a healthcheck, if anything waits for it. Postgres's must probe over TCP: over the socket
+  it is green while the image's temporary first-start server is up.
 
-| Field | Meaning |
-|---|---|
-| `requires` / `optional` | Containers this one depends on. A missing required one is a refusal; a missing optional one is a warning. `depends_on` is emitted from `requires`, with `condition: service_healthy`. |
-| `http` | `container` port, `host` loopback port, and `subdomain` (defaults to the name). Drives the traefik labels and the `ports` block. |
-| `postgres` | The `database` this container gets on Postgres, which is also its user's name, and the `.env` variable holding its `password`. Two containers naming one database share it, and must name the same `settings`. It implies `postgres-18` is on. Optional `settings`, as `{"statement_timeout": "5min"}`, are Postgres settings provisioning puts on the user with `ALTER ROLE … SET`, so they reach every connection regardless of the door. |
-| `clickhouse` | The `database` this container gets on ClickHouse, also its user's name, and the `.env` variable holding its `password`; a different variable from the Postgres one. Two containers naming one database share it. It implies `clickhouse` is on. No `settings`. |
-| `ports` | Ports published on every interface, each `{"port": 443}` with an optional `when` like an ask's. traefik alone. |
-| `volumes` | Named volumes this container mounts. The top-level `volumes` block, "left behind" and `reclaim` all read this. A container may also mount a volume declared on one it depends on, as fort mounts ClickHouse's `clickhouse_backups`; the volume stays the declaring container's. |
-| `asks` | `var`, `type`, `prompt`, optional `when` (`public`, `local` or `VAR=value`) and `keep`. Types: `text hostname email url port secret generated hex choice paths`, described under *The interview*. |
-| `external` | `{"PREFIX": {"kind": "bucket"}}`, or `{"kind": "secret-store"}`. A bucket takes `"versioned": true`, `"never_expire": true`, and `"delete"` as `"*"` for any object or a prefix like `"locks/*"` for objects under it; left out, the key may never delete. The kind supplies five variables under the prefix, and the interview asks them with the offer and the checklist, under *Object store* and *Secret store*. Two containers naming one prefix share it and must describe it alike. |
-| `files` | The variable holding absolute paths this container keeps, separated by colons. Each path's directory is mounted read-only at the same place under `/files`. fort is the one, under *fort*. |
-| `renamed` | `{"OLD_NAME": "NEW_NAME"}`. The next run moves the `.env` value under its new name and drops the old line. |
-| `removed` | Variables this container no longer reads. The next run drops their lines. |
+Settings two containers of one product share go in a YAML anchor at the top of the file, as
+the doors, langfuse and twenty do. Every network and named volume a container uses is declared
+at the bottom of the file. Declaring one in two files is fine: compose merges them.
 
-### The template
-
-- The generator owns `container_name`, `restart`, `depends_on`, `networks`, `labels`,
-  `ports` and `mem_limit`. The template holds every other key compose knows: `image`,
-  `environment`, `command`, `volumes`, `healthcheck`, `shm_size` and the rest.
-- `environment` opens with `<<: *userland-environment`. That merge line is how `TZ=UTC`
-  reaches every container from one anchor the generator emits.
-- The template reads the manifest rather than repeating it: `.Name`, `.Product`,
-  `.Visibility`, `.Postgres`, `.ClickHouse` and `.HTTP` are in scope, and `{{ ref "VAR" }}`
-  renders `${VAR}`. Never write a value where a reference will do.
-- `.On "traefik"` says whether another container is in the selection, so a template can
-  follow it: n8n points at its runners only while they are on, and sets its URLs only while
-  traefik is.
-- A `define` whose name holds a dot, such as `langfuse.environment`, is a helper and no
-  container: another template in the file includes it with
-  `{{ template "langfuse.environment" . }}`, where it renders with that template's manifest.
-  langfuse's web and worker share their environment through one. Start a helper that is
-  included inside `environment` with a plain `{{ define … }}`, not `{{- define … -}}`, or the
-  trim eats its first line's indentation.
-- A container anything requires needs a healthcheck. Postgres's must probe over TCP:
-  over the socket it is green while the image's temporary first-start server is up.
-- A named volume is both a line under `volumes` in the manifest and a mount in the
-  template.
-- A variable read without a default is asked in the manifest or is a database password;
-  one with a default, `${VAR:-value}`, is optional and lands in `VARIABLES.md` by itself.
-
-### Names the CLI knows
-
-Seven names are kinds the CLI defines rather than manifest data: `traefik`, whose
-presence decides labels and loopback ports; `postgres-18`, which provisioning execs into
-and which every container with a Postgres database requires; `clickhouse`, the same for a
-ClickHouse database; `pgbouncer-transaction` and `pgbouncer-session`, the two doors the
-Contract names; `pgbouncer_auth`, the user both doors look passwords up with; and `fort`,
-whose `backup` execs into it, whose `restore` runs its image directly, and whose presence
-makes an apply end with a backup. Two volume names are known too, `postgres_data` and
-`clickhouse_data`, so that switching a datastore off says which volume every database lives
-in.
+Then add the product to `products` in `test/compose.bats`, give it a test that it runs with
+what it needs, and give it a section here with a table of its variables. The tests fail until
+the table names every one.
 
 ## Notes
 
@@ -1086,12 +1004,10 @@ in.
   name and your host address all live in `.env`, which is gitignored, so this repo can be
   published without redaction. Never write a real domain, bucket name, host address, email
   or account identifier into a tracked file.
-- **That one `.env` holds every secret of every container you switched on.** Confirm
+- **That one `.env` holds every secret of every product you switched on.** Confirm
   `.gitignore` excludes it before your first commit, and keep a copy somewhere off this
-  machine. Some of what it holds — encryption keys a container writes data with — cannot be
-  regenerated, and losing them loses the data. The CLI names those lines when it finishes;
-  copy them somewhere before anything runs, or switch on fort and it keeps `.env` for
-  you, under a master key that lives in a secret store you own.
+  machine. Some of what it holds, the encryption keys a product writes data with, cannot be
+  regenerated, and losing them loses the data.
 - **Postgres and the doors run at their images' defaults.** No pool size, connection
   ceiling or memory setting is written anywhere in this repo, beyond the two doors'
   client ceiling and the session door's pool, which is Postgres's own connection limit so

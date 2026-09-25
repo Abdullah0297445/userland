@@ -1,50 +1,87 @@
-{{ define "twenty.environment" }}
-  SERVER_URL: {{ if .On "traefik" }}{{ if eq .Visibility "public" }}https://twenty.${DOMAIN}{{ else }}http://twenty.localhost{{ end }}{{ else }}http://localhost:3002{{ end }}
-  PG_DATABASE_URL: postgres://{{ .Postgres.Database }}:{{ ref .Postgres.Password }}@pgbouncer-session:5432/{{ .Postgres.Database }}
-  REDIS_URL: redis://:${TWENTY_REDIS_PASSWORD}@twenty-redis:6379
-  ENCRYPTION_KEY: ${TWENTY_ENCRYPTION_KEY}
+x-twenty-environment: &twenty-environment
+  SERVER_URL: ${SCHEME:?}://twenty.${DOMAIN:?}
+  PG_DATABASE_URL: postgres://twenty:${TWENTY_DB_PASSWORD:?}@pgbouncer-session:5432/twenty
+  REDIS_URL: redis://:${TWENTY_REDIS_PASSWORD:?}@twenty-redis:6379
+  ENCRYPTION_KEY: ${TWENTY_ENCRYPTION_KEY:?}
   STORAGE_TYPE: s3
-  STORAGE_S3_NAME: ${TWENTY_S3_BUCKET}
-  STORAGE_S3_REGION: ${TWENTY_S3_REGION}
-  STORAGE_S3_ENDPOINT: ${TWENTY_S3_ENDPOINT}
-  STORAGE_S3_ACCESS_KEY_ID: ${TWENTY_S3_ACCESS_KEY_ID}
-  STORAGE_S3_SECRET_ACCESS_KEY: ${TWENTY_S3_SECRET_ACCESS_KEY}
-{{- end }}
+  STORAGE_S3_NAME: ${TWENTY_S3_BUCKET:?}
+  STORAGE_S3_REGION: ${TWENTY_S3_REGION:?}
+  STORAGE_S3_ENDPOINT: ${TWENTY_S3_ENDPOINT:?}
+  STORAGE_S3_ACCESS_KEY_ID: ${TWENTY_S3_ACCESS_KEY_ID:?}
+  STORAGE_S3_SECRET_ACCESS_KEY: ${TWENTY_S3_SECRET_ACCESS_KEY:?}
 
-{{ define "twenty-server" -}}
-image: twentycrm/twenty:v2.41.0
-environment:
-  <<: *userland-environment
-{{ template "twenty.environment" . }}
-healthcheck:
-  test: ["CMD", "curl", "--fail", "--silent", "--output", "/dev/null", "http://127.0.0.1:3000/healthz"]
-  interval: 15s
-  timeout: 5s
-  retries: 5
-  start_period: 300s
-{{ end }}
+services:
+  twenty-server:
+    image: twentycrm/twenty:v2.41.0
+    container_name: twenty-server
+    restart: unless-stopped
+    depends_on:
+      pgbouncer-session:
+        condition: service_healthy
+      twenty-redis:
+        condition: service_healthy
+    environment:
+      <<: *twenty-environment
+    networks:
+      - twenty
+      - postgres
+      - traefik
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.twenty-server.rule=Host(`twenty.${DOMAIN:?}`)
+      - traefik.http.services.twenty-server.loadbalancer.server.port=3000
+      - traefik.docker.network=userland_traefik
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "--output", "/dev/null", "http://127.0.0.1:3000/healthz"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 300s
+    mem_limit: ${TWENTY_SERVER_MEM_LIMIT:-0}
 
-{{ define "twenty-worker" -}}
-image: twentycrm/twenty:v2.41.0
-command: ["yarn", "worker:prod"]
-environment:
-  <<: *userland-environment
-{{ template "twenty.environment" . }}
-  DISABLE_DB_MIGRATIONS: true
-  DISABLE_CRON_JOBS_REGISTRATION: true
-{{ end }}
+  twenty-worker:
+    image: twentycrm/twenty:v2.41.0
+    container_name: twenty-worker
+    restart: unless-stopped
+    depends_on:
+      twenty-server:
+        condition: service_healthy
+      pgbouncer-session:
+        condition: service_healthy
+      twenty-redis:
+        condition: service_healthy
+    command: ["yarn", "worker:prod"]
+    environment:
+      <<: *twenty-environment
+      DISABLE_DB_MIGRATIONS: true
+      DISABLE_CRON_JOBS_REGISTRATION: true
+    networks:
+      - twenty
+      - postgres
+    mem_limit: ${TWENTY_WORKER_MEM_LIMIT:-0}
 
-{{ define "twenty-redis" -}}
-image: redis:7-alpine
-command: ["redis-server", "--requirepass", "${TWENTY_REDIS_PASSWORD}", "--maxmemory-policy", "noeviction", "--appendonly", "yes"]
-environment:
-  <<: *userland-environment
-  REDISCLI_AUTH: ${TWENTY_REDIS_PASSWORD}
+  twenty-redis:
+    image: redis:7-alpine
+    container_name: twenty-redis
+    restart: unless-stopped
+    command: ["redis-server", "--requirepass", "${TWENTY_REDIS_PASSWORD:?}", "--maxmemory-policy", "noeviction", "--appendonly", "yes"]
+    environment:
+      REDISCLI_AUTH: ${TWENTY_REDIS_PASSWORD:?}
+    networks:
+      - twenty
+    volumes:
+      - twenty_redis_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    mem_limit: ${TWENTY_REDIS_MEM_LIMIT:-0}
+
+networks:
+  twenty: {}
+  postgres: {}
+  traefik: {}
+
 volumes:
-  - twenty_redis_data:/data
-healthcheck:
-  test: ["CMD-SHELL", "redis-cli ping | grep -q PONG"]
-  interval: 10s
-  timeout: 5s
-  retries: 5
-{{ end }}
+  twenty_redis_data: {}

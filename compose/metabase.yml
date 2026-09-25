@@ -1,23 +1,43 @@
-{{ define "metabase" -}}
-image: metabase/metabase:v0.63.15
-environment:
-  <<: *userland-environment
-  MB_DB_TYPE: postgres
-  MB_DB_HOST: pgbouncer-transaction
-  MB_DB_PORT: 5432
-  MB_DB_DBNAME: {{ .Postgres.Database }}
-  MB_DB_USER: {{ .Postgres.Database }}
-  MB_DB_PASS: {{ ref .Postgres.Password }}
-  MB_ENCRYPTION_SECRET_KEY: ${MB_ENCRYPTION_SECRET_KEY}
-  MB_AGGREGATED_QUERY_ROW_LIMIT: ${MB_AGGREGATED_QUERY_ROW_LIMIT:-10000}
-  MB_UNAGGREGATED_QUERY_ROW_LIMIT: ${MB_UNAGGREGATED_QUERY_ROW_LIMIT:-2000}
+services:
+  metabase:
+    image: metabase/metabase:v0.63.15
+    container_name: metabase
+    restart: unless-stopped
+    depends_on:
+      pgbouncer-transaction:
+        condition: service_healthy
+    environment:
+      MB_DB_TYPE: postgres
+      MB_DB_HOST: pgbouncer-transaction
+      MB_DB_PORT: 5432
+      MB_DB_DBNAME: metabase
+      MB_DB_USER: metabase
+      MB_DB_PASS: ${METABASE_DB_PASSWORD:?}
+      MB_ENCRYPTION_SECRET_KEY: ${MB_ENCRYPTION_SECRET_KEY:?}
+      MB_AGGREGATED_QUERY_ROW_LIMIT: ${MB_AGGREGATED_QUERY_ROW_LIMIT:-10000}
+      MB_UNAGGREGATED_QUERY_ROW_LIMIT: ${MB_UNAGGREGATED_QUERY_ROW_LIMIT:-2000}
+    networks:
+      - postgres
+      - traefik
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.metabase.rule=Host(`metabase.${DOMAIN:?}`)
+      - traefik.http.services.metabase.loadbalancer.server.port=3000
+      - traefik.docker.network=userland_traefik
+    volumes:
+      - /dev/urandom:/dev/random:ro
+      - metabase_plugins:/plugins
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "-I", "http://localhost:3000/api/health"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    mem_limit: ${METABASE_MEM_LIMIT:-0}
+
+networks:
+  postgres: {}
+  traefik: {}
+
 volumes:
-  - /dev/urandom:/dev/random:ro
-  - metabase_plugins:/plugins
-healthcheck:
-  test: ["CMD", "curl", "--fail", "-I", "http://localhost:3000/api/health"]
-  interval: 15s
-  timeout: 10s
-  retries: 5
-  start_period: 120s
-{{ end }}
+  metabase_plugins: {}

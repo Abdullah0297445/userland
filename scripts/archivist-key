@@ -1,0 +1,13 @@
+#!/bin/sh
+set -e
+
+if [ -z "$ARCHIVIST_KEY_NAME" ]; then
+	echo "archivist-key: ARCHIVIST_KEY_NAME is empty; the master key has no name to read" >&2
+	exit 1
+fi
+
+AWS_ACCESS_KEY_ID="$ARCHIVIST_KEY_ACCESS_KEY_ID" \
+AWS_SECRET_ACCESS_KEY="$ARCHIVIST_KEY_SECRET_ACCESS_KEY" \
+AWS_DEFAULT_REGION="$ARCHIVIST_KEY_REGION" \
+AWS_REGION="$ARCHIVIST_KEY_REGION" \
+exec ssmget "$ARCHIVIST_KEY_NAME"

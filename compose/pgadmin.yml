@@ -1,0 +1,45 @@
+services:
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: pgadmin
+    restart: unless-stopped
+    depends_on:
+      postgres-18:
+        condition: service_healthy
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_DEFAULT_EMAIL:?}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_DEFAULT_PASSWORD:?}
+      PGADMIN_LISTEN_PORT: 5050
+      PGADMIN_DISABLE_POSTFIX: 1
+      GUNICORN_ACCESS_LOGFILE: /dev/null
+      PGADMIN_CONFIG_PROXY_X_FOR_COUNT: 1
+      PGADMIN_CONFIG_PROXY_X_PROTO_COUNT: 1
+      PGADMIN_CONFIG_PROXY_X_HOST_COUNT: 1
+      PGADMIN_CONFIG_PROXY_X_PORT_COUNT: 1
+      PGADMIN_CONFIG_PROXY_X_PREFIX_COUNT: 0
+      PGADMIN_CONFIG_SESSION_COOKIE_SECURE: ${SECURE_COOKIES:?}
+    networks:
+      - postgres-server
+      - traefik
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.pgadmin.rule=Host(`pgadmin.${DOMAIN:?}`)
+      - traefik.http.services.pgadmin.loadbalancer.server.port=5050
+      - traefik.docker.network=userland_traefik
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+      - ./config/pgadmin-servers.json:/pgadmin4/servers.json:ro
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--output-document=-", "http://localhost:5050/misc/ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    mem_limit: ${PGADMIN_MEM_LIMIT:-0}
+
+networks:
+  postgres-server: {}
+  traefik: {}
+
+volumes:
+  pgadmin_data: {}
