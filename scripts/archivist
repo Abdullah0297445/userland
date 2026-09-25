@@ -1,0 +1,122 @@
+#!/bin/sh
+set -eu
+
+backups=/backups
+lock=/tmp/archivist.lock
+state=/tmp/archivist-health
+
+say() {
+	echo "archivist: $*"
+}
+
+complain() {
+	echo "archivist: $*" >&2
+}
+
+check() {
+	if ! archivist-key >/dev/null; then
+		complain "could not read the master key, so nothing was written"
+		exit 1
+	fi
+	errors=/tmp/archivist-check
+	code=0
+	timeout 120 restic cat config >/dev/null 2>"$errors" || code=$?
+	case $code in
+	0) ;;
+	10)
+		complain "there is no repository in the bucket, so nothing was written. Make it once, by hand: docker compose run --rm archivist init"
+		exit 1
+		;;
+	12)
+		complain "the master key does not open the repository in the bucket, so nothing was written"
+		exit 1
+		;;
+	*)
+		reason=$(tail -n 1 "$errors")
+		complain "could not open the repository in the bucket, so nothing was written: ${reason:-no answer within two minutes}"
+		exit 1
+		;;
+	esac
+}
+
+upload() {
+	exec 8>"$lock"
+	flock 8
+	uploaded=0
+	for run in "$backups"/*/[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]T[0-9][0-9][0-9][0-9][0-9][0-9]Z; do
+		[ -d "$run" ] || continue
+		datastore=$(basename "$(dirname "$run")")
+		[ "$datastore" != restore ] || continue
+		name=$(basename "$run")
+		time=$(echo "$name" | sed 's/^\(....\)\(..\)\(..\)T\(..\)\(..\)\(..\)Z$/\1-\2-\3 \4:\5:\6/')
+		files=$(find "$run" -type f | sort)
+		while IFS= read -r file; do
+			[ -n "$file" ] || continue
+			path=$datastore/${file#"$run"/}
+			if restic backup --quiet --tag "$datastore" --time "$time" --stdin --stdin-filename "$path" <"$file"; then
+				rm -f "$file"
+				uploaded=$((uploaded + 1))
+				say "uploaded /$path of $name"
+			else
+				complain "could not upload /$path of $name. It stays in the backup folder, and the next upload tries again."
+				echo failed >"$state"
+				return 1
+			fi
+		done <<EOF
+$files
+EOF
+		rm -rf "$run"
+	done
+	[ "$uploaded" -eq 0 ] || echo ok >"$state"
+}
+
+fetch() {
+	if [ $# -lt 1 ] || [ $# -gt 2 ]; then
+		complain "usage: archivist fetch PATH [SNAPSHOT]"
+		exit 2
+	fi
+	path=$1
+	target=$backups/restore$path
+	mkdir -p "$(dirname "$target")"
+	if [ $# -eq 2 ]; then
+		restic dump "$2" "$path" >"$target.part" || {
+			rm -f "$target.part"
+			exit 1
+		}
+	else
+		restic dump --path "$path" latest "$path" >"$target.part" || {
+			rm -f "$target.part"
+			exit 1
+		}
+	fi
+	mv "$target.part" "$target"
+	say "wrote $path into $target"
+}
+
+health() {
+	[ -f "$state" ] || exit 0
+	if [ "$(cat "$state")" != ok ]; then
+		echo "the last upload failed; docker logs archivist says why"
+		exit 1
+	fi
+}
+
+serve() {
+	check
+	say "uploads what the dumpers leave in $backups, every minute"
+	while :; do
+		upload || true
+		sleep 60
+	done
+}
+
+case "${1:-}" in
+"") serve ;;
+upload) upload ;;
+fetch)
+	shift
+	fetch "$@"
+	;;
+health) health ;;
+*) exec restic "$@" ;;
+esac

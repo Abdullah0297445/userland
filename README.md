@@ -8,9 +8,9 @@ There is no application code here. userland is the ground your own projects stan
 and it is deliberately not one of them.
 
 > **This repo is being built in the open.** userland now runs on docker compose alone. Every
-> product has its compose file, and a consumer's database is made by a helper. Nothing yet makes
-> a product's database: that comes next, so a product that needs Postgres does not start
-> cleanly yet. The design is published as issues on this repo as it is settled.
+> product has its compose file, every database is made by a helper, and every database is
+> archived and taken off the host. Every `.env` living in Infisical comes next. The design is
+> published as issues on this repo as it is settled.
 
 `userland` is the part of a running system that is not the kernel: everything the machine
 runs *for you*. This repo is that layer, for one host.
@@ -20,14 +20,14 @@ runs *for you*. This repo is that layer, for one host.
 | Product | File | Containers |
 |---|---|---|
 | **traefik** | `compose.yml` | traefik. Always on. It terminates TLS for everything else. |
-| **postgres** | `compose/postgres.yml` | `postgres-18` and its two doors, `pgbouncer-transaction` and `pgbouncer-session`. |
+| **postgres** | `compose/postgres.yml` | `postgres-18`, its two doors, `pgbouncer-transaction` and `pgbouncer-session`, and `postgres-dumper`, which archives every database on it. |
 | **pgadmin** | `compose/pgadmin.yml` | pgadmin, the browser UI for Postgres. |
-| **clickhouse** | `compose/clickhouse.yml` | clickhouse. |
+| **clickhouse** | `compose/clickhouse.yml` | clickhouse, and `clickhouse-dumper`, which archives every database on it. |
 | **metabase** | `compose/metabase.yml` | metabase. |
 | **n8n** | `compose/n8n.yml` | n8n and n8n-runners. |
 | **langfuse** | `compose/langfuse.yml` | langfuse-web, langfuse-worker and langfuse-redis. |
 | **twenty** | `compose/twenty.yml` | twenty-server, twenty-worker and twenty-redis. |
-| **archivist** | `compose/archivist.yml` | archivist. It keeps every database on Postgres and ClickHouse in a bucket of its own as [restic](https://restic.net) snapshots, under a master key that never touches the host. |
+| **archivist** | `compose/archivist.yml` | archivist. It takes every archive the dumpers write off the host, into a bucket of its own, as [restic](https://restic.net) snapshots under a master key that never touches the host. |
 
 neo4j is planned.
 
@@ -309,7 +309,7 @@ delete nothing; for langfuse's and twenty's, add `s3:DeleteObject` to the second
 **Retention is yours, except where nothing may expire.** Nothing in userland deletes from a
 bucket whose key cannot, and userland never writes a lifecycle rule: any rule is set by you, at
 your provider. Without a rule, a bucket grows. The archivist's bucket is the exception, and it
-is not a preference. What it holds is one archive whose parts point at each other, so an
+is not a preference. What it holds is one repository whose parts point at each other, so an
 object removed by age takes with it every later part that pointed at it. Set no rule at all
 there. S3 performs an expiration itself, so no bucket policy can stop one you set by mistake.
 Turn versioning on for it: *The archivist* says why.
@@ -412,12 +412,12 @@ cannot tell it apart from one that never ran.
 Three containers, always on together. `postgres-18` is the server: one Postgres for the whole
 host, with a database per product and per consumer, each owned by a user of the same name.
 `pgbouncer-transaction` and `pgbouncer-session` are the two doors, under *For a consumer*.
-Every database is archived by the archivist, under *The archivist*.
+`postgres-dumper` archives every database on it, under *The archivist*.
 
-**Nothing reaches Postgres but through a door, except the archivist and pgadmin.** It is a
+**Nothing reaches Postgres but through a door, except the dumper and pgadmin.** It is a
 wall, not a habit: `postgres-18` sits on a private network, `postgres-server`, that only the
-doors, the archivist and pgadmin join. Consumers and products join `userland_postgres`, where
-only the doors are. The archivist names `postgres-18:5432` so that it keeps every database
+doors, the dumper and pgadmin join. Consumers and products join `userland_postgres`, where
+only the doors are. The dumper names `postgres-18:5432` so that it archives every database
 whichever door is on. pgadmin does because its Query Tool's stop button cancels by the process
 id its connection was handed at the start, and through a door that id is the door's own, so the
 button reports the query complete while it runs on.
@@ -426,9 +426,11 @@ button reports the query complete while it runs on.
 |---|---|---|
 | `POSTGRES_PASSWORD` | required | Password of the Postgres superuser, `postgres`. |
 | `PGBOUNCER_AUTH_PASSWORD` | required | Password of `pgbouncer_auth`, the user the doors look passwords up with. Postgres reads it at its first start only, and *Provisioning* says how to change it. |
+| `POSTGRES_DUMPER_HOURS` | default `24` | Hours between two runs of `postgres-dumper`, counted from 00:00 UTC: 1, 2, 3, 4, 6, 8, 12 or 24. |
 | `POSTGRES_18_MEM_LIMIT` | default no limit | Memory limit of `postgres-18`. |
 | `PGBOUNCER_TRANSACTION_MEM_LIMIT` | default no limit | Memory limit of `pgbouncer-transaction`. |
 | `PGBOUNCER_SESSION_MEM_LIMIT` | default no limit | Memory limit of `pgbouncer-session`. |
+| `POSTGRES_DUMPER_MEM_LIMIT` | default no limit | Memory limit of `postgres-dumper`. |
 
 ## pgadmin
 
@@ -468,14 +470,14 @@ exactly one proxy in front of it, traefik.
 
 userland runs ClickHouse as one container. langfuse calls that development-only, because one
 box has no redundancy. Every event langfuse ingests is written to your bucket first, and
-Postgres holds everything you configure; ClickHouse holds what you see in the UI. The archivist
-archives every database on it, under *The archivist*.
+Postgres holds everything you configure; ClickHouse holds what you see in the UI.
+`clickhouse-dumper` archives every database on it, under *The archivist*.
 
 The image is `clickhouse/clickhouse-server:26.8`, the long-term-support line after the 26.4
 that langfuse recommends, and it moves within that line. The container runs at ClickHouse's
 own defaults, in UTC, which langfuse requires, with the one setting the image documents,
 `nofile 262144`. `CLICKHOUSE_PASSWORD` is the admin user `default`, which provisioning and
-the archivist use and no product does; the image turns on access management for it, so it may
+the dumper use and no product does; the image turns on access management for it, so it may
 create users.
 
 **Every product or consumer gets its own database and user on ClickHouse, exactly as on
@@ -499,13 +501,16 @@ rotated by the image; `docker logs clickhouse` shows only the entrypoint. Nothin
 on the host: products reach it on `userland_clickhouse`, ports 8123 for HTTP and 9000 for the
 native protocol, and you reach it with `docker exec clickhouse clickhouse-client`.
 
-Its backup directory, `/var/lib/clickhouse/backups`, is a volume of its own,
-`clickhouse_backups`. The archivist mounts it too, and it holds nothing between runs.
+Its backup directory, `/var/lib/clickhouse/backups`, is the backup folder, `backups`, which
+the dumpers and the archivist mount too. ClickHouse writes its archives into `clickhouse/`
+there.
 
 | Variable | Needed | Meaning |
 |---|---|---|
 | `CLICKHOUSE_PASSWORD` | required | Password of the ClickHouse admin user, `default`. |
+| `CLICKHOUSE_DUMPER_HOURS` | default `24` | Hours between two runs of `clickhouse-dumper`, counted from 00:00 UTC: 1, 2, 3, 4, 6, 8, 12 or 24. |
 | `CLICKHOUSE_MEM_LIMIT` | default no limit | Memory limit of `clickhouse`. |
+| `CLICKHOUSE_DUMPER_MEM_LIMIT` | default no limit | Memory limit of `clickhouse-dumper`. |
 
 ## n8n
 
@@ -654,8 +659,8 @@ dump. Before that `up`:
 1. Read every release note between the two versions. What bites is rarely in the migrations:
    a major can move the sample database's engine, break the driver plugin API so a
    third-party driver needs rebuilding, or move the bundled JVM.
-2. Take a fresh archive with `docker exec archivist /archivist-entrypoint.sh backup`. Last
-   night's is not one minute ago, and this one is the rollback.
+2. Take a fresh archive with `docker exec postgres-dumper dumper now`. Last night's is not
+   one minute ago, and this one is the rollback.
 3. Rehearse on another machine: restore that archive into a throwaway Postgres, start the new
    tag against it, and compare the counts of dashboards, questions and users, `/api/health`,
    and the schema version in the log. The rehearsal needs the key, since an encrypted
@@ -670,7 +675,7 @@ on a starved entropy pool, and that shows as a start that hangs rather than one 
 **The volume needs no backup.** Metabase downloads its own driver JARs into
 `metabase_plugins` at start. A third-party driver you put there by hand is the one thing that
 would not come back: keep your own copy, and expect to rebuild it after a major upgrade. The
-database is on Postgres, so the archivist archives it with everything else.
+database is on Postgres, so `postgres-dumper` archives it with everything else.
 
 Both connection pools and every other number run at Metabase's defaults.
 
@@ -696,7 +701,7 @@ keys. ClickHouse holds what you see: traces, observations, scores, each in langf
 database and user. Every event is written to your bucket first, under `events/`, and media and
 batch exports go to the same bucket under `media/` and `exports/`. The Redis volume holds only
 the queue, with append-only persistence on, so a restart loses no job, and `noeviction`,
-because langfuse requires it: an evicted key is a lost job. The archivist archives the two
+because langfuse requires it: an evicted key is a lost job. The two dumpers archive the two
 databases; the queue is not archived, since its jobs are minutes old and their events are in
 the bucket. ClickHouse runs as one container, which langfuse calls development-only, and
 *ClickHouse* says why userland accepts that.
@@ -752,7 +757,8 @@ for the first start's migrations; a fresh install took under half a minute.
 **Upgrading.** Both tags are exact. The web runs the new version's migrations when it starts,
 on Postgres and on ClickHouse, and langfuse documents which releases need more than that.
 Read the release notes between the two versions, take a fresh archive with
-`docker exec archivist /archivist-entrypoint.sh backup`, then move both tags together.
+`docker exec postgres-dumper dumper now` and `docker exec clickhouse-dumper dumper now`, then
+move both tags together.
 
 Everything else, telemetry included, runs at langfuse's defaults.
 
@@ -834,7 +840,7 @@ AWS, Backblaze B2 and Cloudflare R2 all accept them.
 
 **twenty's access key may delete anything in its bucket**, because twenty moves a file by
 copying it and deleting the original, and deletes a file when you delete its attachment. It
-reaches twenty's bucket and nothing else. The archivist archives twenty's database, not the
+reaches twenty's bucket and nothing else. `postgres-dumper` archives twenty's database, not the
 bucket, so a file you delete in twenty is gone even while an older snapshot of the database
 still names it.
 
@@ -864,9 +870,8 @@ nothing over HTTP and nothing waits for it, so it has no healthcheck.
 **Upgrading.** The tag is exact, never `latest`. Each time the server starts it runs twenty's
 upgrade before it serves, which migrates the core schema and every workspace, and it starts
 anyway, with a warning in its log, when a workspace fails to migrate. Read the release notes
-between the two versions, take a fresh archive with
-`docker exec archivist /archivist-entrypoint.sh backup`, then move the tag, which moves both
-containers.
+between the two versions, take a fresh archive with `docker exec postgres-dumper dumper now`,
+then move the tag, which moves both containers.
 
 Everything else, telemetry and the marketplace's catalogue included, runs at twenty's defaults.
 
@@ -887,61 +892,108 @@ Everything else, telemetry and the marketplace's catalogue included, runs at twe
 ## The archivist
 
 The archivist keeps off this host what you cannot lose with it: every database on Postgres and
-ClickHouse. It is one container and it needs no other product; it is the only thing here that
-backs up anything at all. It is changing: each datastore will write its own dumps into a
-backup folder, and the archivist will only encrypt, upload and restore them.
+ClickHouse. Three containers share the work, and none of them waits on another:
 
-**Today it names `postgres-18` and `clickhouse` always.** Compose cannot tell it which of them
-is on, so a run with either off fails that part and keeps the other. It keeps no file: the
-mounts that let it read one went with the Go CLI, so the file part of every run reports that
-there is nothing to keep, and the run exits non-zero.
+- **`postgres-dumper` and `clickhouse-dumper`** archive every database on their datastore into
+  the **backup folder**, the volume `backups`, on a schedule of their own. Each is part of its
+  datastore's product, so it is on whenever that datastore is.
+- **The archivist** takes every archive it finds in the backup folder off the host, into a
+  bucket of its own, and deletes the local copy once it is up. It knows no datastore: it joins
+  no datastore's network and reads no datastore's password.
 
-**Postgres.** Every run archives the globals and every database but `postgres`, read from
-`pg_database`, so **no database is ever named**: one is archived from the day it exists, and
-one that is dropped stops appearing. Each is `pg_dump` in custom format streamed straight into
-restic, so nothing is staged on disk, and a dump that fails saves no snapshot. The dump is left
-uncompressed, because restic compresses what it stores and finds far more to deduplicate in a
-dump that is not already compressed. The archivist connects as the superuser, to
-`postgres-18:5432` directly, with the `pg_dump` 18 its image carries; the client has to match
-the server's major. The globals file is there because a user is a **cluster** object: it lives
-outside every database, so `pg_dump` does not carry it, and a database restored into a Postgres
-that holds no users fails on the first `ALTER TABLE … OWNER TO`. That one file carries the
-stored password verifier of every user on the server, so it is as sensitive as the data.
+An archive still in the backup folder sits on the same disk as the database it came from, so it
+is not yet a backup.
 
-**ClickHouse.** Every run archives every database but ClickHouse's own three, `system`,
-`information_schema` and `INFORMATION_SCHEMA`; `default` is included. The archivist asks
-ClickHouse over HTTP, as `default`, to `BACKUP DATABASE … TO File(…)` into its backup
-directory, which is the volume `clickhouse_backups` that both containers mount. restic reads
-what ClickHouse wrote there, and the archivist empties it again. **The host needs free disk for
-one full copy of ClickHouse's databases while a run is going.** The archivist hands that
-directory to uid 101, the ClickHouse image's own user, before each run, because a volume Docker
-creates belongs to root. The password reaches `curl` on its standard input, never on a command
-line. No file of users is kept, because every ClickHouse user is made from `.env`. ClickHouse
-can write a backup to S3 by itself, and the archivist does not use that: a backup to S3 deletes
-its own lock file when it finishes, so a key that may not delete fails every one, and
-ClickHouse cannot encrypt an archive it writes to S3 at all.
+**The dumpers.**
+
+- A dumper runs every `POSTGRES_DUMPER_HOURS` or `CLICKHOUSE_DUMPER_HOURS` hours, counted from
+  00:00 UTC. The default, 24, is every day at midnight UTC; 6 is 00:00, 06:00, 12:00 and 18:00.
+  It is a shell loop, [`scripts/dumper`](scripts/dumper), run in the server's own image, so its
+  client always matches the server.
+- It writes the time of its last finished run into `last-run`, in its folder. After a restart,
+  a run that fell due while it was down runs at once, and only once. On its very first start it
+  waits for the next slot.
+- A slot that finds its datastore down tries again every minute, and runs as soon as it can.
+- Every run archives every database it finds, so **no database is ever named**: one is
+  archived from the first run after it exists, and one that is dropped stops appearing. Every
+  run also archives the **globals**: the users and their passwords, which live outside every
+  database.
+- A run writes into a folder named by its start time, such as `postgres/20260925T000000Z/`.
+  The folder ends in `.writing` until the whole run is done. Nothing is ever replaced. While
+  the archivist is away, runs pile up there, and the disk has to hold them.
+- `docker exec postgres-dumper dumper now` runs one now, whatever the schedule, and so does
+  `docker exec clickhouse-dumper dumper now`. The archivist takes it off the host within a
+  minute.
+
+**Postgres.** A run holds `globals.sql`, from `pg_dumpall --globals-only`, and
+`databases/NAME.dump` for every database but `postgres`, each a `pg_dump` in custom format. The
+dump is left uncompressed, because restic compresses what it stores and finds far more to
+deduplicate in a dump that is not already compressed. The dumper connects as the superuser, to
+`postgres-18:5432` directly. The globals file is there because a user is a **cluster** object:
+it lives outside every database, so `pg_dump` does not carry it, and a database restored into a
+Postgres that holds no users fails on the first `ALTER TABLE … OWNER TO`. That one file carries
+the stored password verifier of every user on the server, so it is as sensitive as the data.
+
+**ClickHouse.** A run holds `globals.tar`, from `BACKUP TABLE system.users`: every user made by
+SQL, with its password hash and its grants. `default` is not among them, because it comes from
+`CLICKHOUSE_PASSWORD`. The run also holds `databases/NAME.tar` for every database but
+ClickHouse's own three, `system`, `information_schema` and `INFORMATION_SCHEMA`; `default` is
+included. Each is a `BACKUP DATABASE … TO File(…)`: one uncompressed tar, written by ClickHouse
+itself into the backup folder, which it mounts as its backup directory. The dumper hands
+`clickhouse/` to uid 101, the ClickHouse image's own user, because a volume Docker creates
+belongs to root. ClickHouse can write a backup to S3 by itself, and userland does not use that:
+a backup to S3 deletes its own lock file when it finishes, so a key that may not delete fails
+every one, and ClickHouse cannot encrypt an archive it writes to S3 at all.
+
+**Uploading.**
+
+- Every minute the archivist looks in the backup folder. It uploads each finished run, oldest
+  first, and skips a run still `.writing`, each `last-run`, and `restore/`. With nothing
+  there, it does nothing: it reads no key and sends no request.
+- Each archive becomes one snapshot, tagged `postgres` or `clickhouse`, at a path such as
+  `/postgres/databases/shop.dump`. It is dated when the dumper made it, not when it left the
+  host.
+- Each archive is deleted from the folder once it is up. An upload that fails keeps it, stops
+  that pass, and is tried again the next minute.
+- `docker exec archivist archivist upload` uploads now.
+
+**The repository.** restic keeps every archive in one repository, inside the bucket. It is not
+the bucket. You make it once, by hand, after you make the bucket:
+
+```sh
+docker compose run --rm archivist init
+```
+
+The archivist never makes one on its own, for two reasons. `restic init` makes a missing bucket
+whenever the key allows it, and restic cannot tell a missing bucket from a missing repository.
+And a repository that has vanished is an alarm, not a fresh start. So at every start the
+archivist reads the master key and opens the repository, waiting up to two minutes. If there
+is no repository, or the key does not open it, or the secret store or the bucket cannot be
+reached, it writes nothing. It says which in `docker logs archivist` and exits, and docker
+starts it again, waiting longer each time. On a new host the repository is already in the
+bucket, so never run `init` there.
 
 **What is in the bucket.** restic snapshots, and nothing you can read without the master key.
 Each object is named after the hash of its own contents, so nothing is ever overwritten and
-nothing is ever a file path; every backup adds snapshots, and the list of snapshots is the
-history. One run makes one snapshot tagged `postgres` for the globals and for each database,
-and one tagged `clickhouse` holding every ClickHouse database;
-`docker exec archivist restic snapshots` lists them. There is no `.gpg` next to a familiar name
-to grab, and equally no way to get anything back except through restic with the key.
+nothing is ever a file path; every upload adds snapshots, and the list of snapshots is the
+history. `docker exec archivist restic snapshots` lists them, and
+`--path /postgres/databases/shop.dump` lists one database's. There is no `.gpg` next to a
+familiar name to grab, and equally no way to get anything back except through restic with the
+key.
 
-**The master key is the repository password**, read out of your secret store at the start of
-every run by `scripts/archivist-key`, held in memory, and written nowhere: not in `.env`, not
-on disk, not in the bucket, which holds it only as ciphertext that the password unlocks. So
-**replacing the parameter's value does not re-key anything; it locks the archivist out of its
-own archive.** Never overwrite it.
+**The master key is the repository password**, read out of your secret store by
+`scripts/archivist-key` each time restic runs, held in memory, and written nowhere: not in
+`.env`, not on disk, not in the bucket, which holds it only as ciphertext that the password
+unlocks. So **replacing the parameter's value does not re-key anything; it locks the archivist
+out of its own repository.** Never overwrite it.
 
-**Retention: never prune, nothing expires.** The archivist only ever adds. Every run is a full
-backup, so each snapshot restores alone, but restic stores only the chunks it has not seen
-before, so a run adds roughly what changed since the last one. A large database that did not
-change adds almost nothing. A small one is stored whole again whenever it changes at all,
-because it is only a chunk or two, and the globals file changes on every run. **The archive
-keeps everything, including what you delete**: a row dropped from a database, a trace
-langfuse's own Data Retention removes: every earlier snapshot still holds it. `forget` and
+**Retention: never prune, nothing expires.** The archivist only ever adds. Every archive is a
+full backup of one database, so each snapshot restores alone, but restic stores only the chunks
+it has not seen before, so an archive adds roughly what changed since the last one. A large
+database that did not change adds almost nothing. A small one is stored whole again whenever it
+changes at all, because it is only a chunk or two, and the globals change on every run. **The
+repository keeps everything, including what you delete**: a row dropped from a database, a
+trace langfuse's own Data Retention removes: every earlier snapshot still holds it. `forget` and
 `prune`, which are how restic reclaims space, need delete rights the key does not have, and so
 do `unlock --remove-all`, `rewrite` and `tag`: if you ever want them, restic's own guidance is a
 separate, well-secured machine with a delete-capable key, never this host. And **set no
@@ -953,52 +1005,50 @@ garbage over any object under its own name, using the archivist's key, and resti
 that would stop it. With versioning on, the original is still there as an older version and you
 put it back by hand with an identity of your own. Because restic never overwrites anything, **an
 older version in this bucket means something other than restic wrote there.** `restic check`
-will tell you the archive is damaged, because an object's contents no longer match its name,
+will tell you the repository is damaged, because an object's contents no longer match its name,
 but it cannot repair what it does not have.
 
 **The image is this repo's own**, the only one it builds. `pull_policy: build` makes every
 `docker compose up` build it, which is quick when nothing changed, and recreates the container
 only when the image did. It is `restic/restic:0.19.1` plus `ssmget`, a small Go program built in
-a stage of its own that reads the one parameter through Amazon's own library, and Alpine's
-`curl` and `postgresql18-client`. Process 1 is busybox `crond`, which the image already carries,
-reading `ARCHIVIST_SCHEDULE` (`@daily` unless you set it). crond hands a job almost no
-environment, so the entrypoint saves its own with `export -p` into `/run/archivist.env`, mode
-600, and the scheduled line sources it. `docker exec archivist /archivist-entrypoint.sh backup`
-runs the same backup now.
+a stage of its own that reads the one parameter through Amazon's own library, and two scripts:
+[`scripts/archivist`](scripts/archivist), its loop and its commands, and `scripts/archivist-key`,
+its password command. restic's version is written only in the Dockerfile. The dumpers build
+nothing: each runs `scripts/dumper`, mounted into its server's image.
 
-**A part that fails fails the run, and the rest is still kept.** A database whose dump fails
-saves no snapshot, and a ClickHouse that cannot be reached saves none of its databases; every
-other database is kept regardless, and the run exits non-zero naming what was not. **Nobody is
-told when a scheduled run fails**: until userland runs something that watches,
-`docker logs archivist` and the snapshot list are the evidence.
+**Each container reports on itself**, through docker's healthcheck, so `docker compose ps`
+shows it. A dumper turns unhealthy when its last run failed, or when none has finished for two
+intervals. The archivist turns unhealthy when its last upload failed, and healthy again at the
+next one that succeeds. **Nobody is told**: until userland runs something that watches,
+`docker compose ps`, `docker logs` and the snapshot list are the evidence.
 
-**Databases come back by hand, through the running archivist, and a restore nobody has
-rehearsed is not a backup.** Into a throwaway database on the running Postgres, which is the
-drill:
+**A database comes back by hand, with `bin/restore`, and a restore nobody has rehearsed is not
+a backup.** The archivist writes the archive into `restore/` in the backup folder, the dumper
+restores it from there, and the copy is removed afterwards.
 
 ```sh
-docker exec postgres-18 createdb -U postgres drill
-docker exec archivist restic dump --path /postgres/DATABASE.dump latest /postgres/DATABASE.dump \
-  | docker exec -i postgres-18 pg_restore -U postgres --no-owner --no-acl -d drill
+bin/restore --postgres shop --as drill
+bin/restore --clickhouse events --as drill
+bin/restore --postgres shop
+bin/restore --postgres shop --snapshot 1a2b3c4d
 ```
 
-Back into the running server the user already exists, so drop `--no-owner --no-acl` and name
-the real database. Into a Postgres that holds nothing, restore the globals first, streamed from
-`/postgres/globals.sql` the same way into `psql -U postgres`, and the databases after it; the
-only error it prints is that the image's own `postgres` user already exists. On ClickHouse, into
-a database of another name:
+- `--postgres` or `--clickhouse` is required: one of them, always.
+- `--as OTHER` restores into a new database, OTHER, and touches nothing live. This is the
+  drill. On Postgres the new database belongs to the superuser, because the archive's owner
+  and grants are left out. `bin/remove-database OTHER` drops it when you are done.
+- Without `--as`, the live database is dropped, made again and restored, once you type its
+  name. On Postgres it comes back with its owner, its grants and its settings. On ClickHouse
+  its user's grants were never dropped. Every change since the archive is lost, so stop
+  whatever uses the database first.
+- A database whose user is gone is refused, because a restore never makes a user and a
+  database's archive holds none. Make it with `bin/add-database`, which prints a new password,
+  and then restore over it.
+- It takes the newest archive of that one database. `--snapshot ID` takes an older one: the
+  snapshot list above shows each one's ID.
 
-```sh
-docker exec archivist restic dump --tag clickhouse latest:/clickhouse /DATABASE --archive tar \
-  | docker exec -i -u clickhouse clickhouse tar -x -C /var/lib/clickhouse/backups
-docker exec clickhouse clickhouse-client -q "RESTORE DATABASE DATABASE AS drill FROM File('DATABASE')"
-```
-
-The archivist's next run empties the backup directory again. An earlier snapshot takes its ID
-in place of `latest`, and `docker exec archivist restic snapshots --path /postgres/DATABASE.dump`
-lists one database's.
-
-It also reads `POSTGRES_PASSWORD` and `CLICKHOUSE_PASSWORD`, under *Postgres* and *ClickHouse*.
+The globals go back only into a datastore being rebuilt, and `bin/restore` never puts them
+back. Bringing a whole host back is not written yet.
 
 | Variable | Needed | Meaning |
 |---|---|---|
@@ -1012,7 +1062,6 @@ It also reads `POSTGRES_PASSWORD` and `CLICKHOUSE_PASSWORD`, under *Postgres* an
 | `ARCHIVIST_KEY_REGION` | required | Region of the parameter. |
 | `ARCHIVIST_KEY_ACCESS_KEY_ID` | required | Access key that may read this one parameter and nothing else. |
 | `ARCHIVIST_KEY_SECRET_ACCESS_KEY` | required | Its secret. |
-| `ARCHIVIST_SCHEDULE` | default `@daily` | When the backup runs, in cron's terms. |
 | `ARCHIVIST_MEM_LIMIT` | default no limit | Memory limit of `archivist`. |
 
 ## For a consumer
@@ -1087,7 +1136,11 @@ compose makes of the files, `docker compose config`, and assert:
   and for PostgREST's authenticator;
 - after `bin/new-password pgbouncer_auth` and an `up` with the printed line, both doors let users
   in;
-- new-password refuses the superuser, a user without its database, an anon role and a bad name.
+- new-password refuses the superuser, a user without its database, an anon role and a bad name;
+- a run of `postgres-dumper` archives the globals and every database, and a database added
+  later is archived without being named;
+- a run keeps its temporary name until every database is archived;
+- a run missed while the dumper was down is caught up after a restart, and only once.
 
 `test/clickhouse.bats` starts the real `clickhouse` the same way, and asserts:
 
@@ -1098,7 +1151,31 @@ compose makes of the files, `docker compose config`, and assert:
   nothing;
 - remove drops nothing unless the name is typed, then drops the database and its user, and the
   name can be added again;
-- a new password logs in, and the old one no longer does; `default` is refused.
+- a new password logs in, and the old one no longer does; `default` is refused;
+- a run of `clickhouse-dumper` archives the users and every database, and a database added
+  later is archived without being named.
+
+`test/archivist.bats` starts the archivist, with [moto](https://github.com/getmoto/moto)
+standing in for both the bucket and the secret store, and puts run folders into the backup
+folder by hand, as a dumper would. It asserts:
+
+- with no repository, the archivist refuses to start and writes nothing, and after `init` by
+  hand it starts;
+- a foreign key is refused at start, and nothing is written;
+- an archive becomes a snapshot dated when the dumper made it, and leaves the folder, while a
+  run still writing and `last-run` stay;
+- an archive whose upload fails stays in the folder, and the archivist is unhealthy until an
+  upload succeeds.
+
+`test/restore.bats` starts Postgres, ClickHouse, both dumpers and the archivist, with moto,
+and asserts, on Postgres and on ClickHouse:
+
+- restore names its datastore, one of the two, and refuses a bad name;
+- a database comes back under another name, and nothing live is touched;
+- a database is replaced by its archive only once its name is typed, and its user still
+  reaches it;
+- an older archive is picked by its snapshot;
+- a database whose user is gone is refused, and nothing is changed.
 
 Their container names are the real ones, so they cannot run on a host where userland is up.
 There their first `up` fails, and the running userland is not touched.
@@ -1126,9 +1203,9 @@ Both run in CI on every pull request and on every push to `main`
 | `compose.yml` | traefik, always on, and always first in `COMPOSE_FILE`. |
 | `compose/` | One file per product, and `public.yml`, which turns traefik public. |
 | `test/` | The bats tests. |
-| `scripts/` | Shell that runs inside a container: the archivist's entrypoint, which is its schedule and its backup, and its password command. Nothing here runs on the host. |
-| `bin/` | Helpers that run on the host, in POSIX sh, needing only docker: `add-database`, `new-password` and `remove-database`. |
-| `Dockerfile` | The archivist's image, the only one this repo builds: restic, a reader for the secret store, and the Postgres and HTTP clients its backup needs. |
+| `scripts/` | Shell that runs inside a container: the archivist's loop and commands, its password command, and the dumper both datastores run. Nothing here runs on the host. |
+| `bin/` | Helpers that run on the host, in POSIX sh, needing only docker: `add-database`, `new-password`, `remove-database` and `restore`. |
+| `Dockerfile` | The archivist's image, the only one this repo builds: restic, and a reader for the secret store. |
 | `ssmget/` | That reader, a small Go module of its own. |
 | `initdb/` | First-start initialisation for Postgres. Runs once, against an empty volume, and never again. `door-auth.sh` makes the doors' auth user. |
 | `config/` | Configuration files a container mounts, checked in because they hold nothing secret. pgadmin's one server is the first. |
@@ -1161,6 +1238,10 @@ at the bottom of the file. Declaring one in two files is fine: compose merges th
 A product with a database reads its password as `<PRODUCT>_DB_PASSWORD`, or
 `<PRODUCT>_CLICKHOUSE_PASSWORD` on ClickHouse, because those are the lines `bin/add-database`
 prints. Give it a row in the table under *Provisioning*.
+
+A new datastore gets a dumper of its own, as Postgres and ClickHouse do: a container on the
+server's image that runs `scripts/dumper` and mounts `backups`. `scripts/dumper` then needs that
+datastore's own way to list its databases, archive one, and restore one.
 
 Then add the product to `products` in `test/compose.bats`, give it a test that it runs with
 what it needs, and give it a section here with a table of its variables. The tests fail until

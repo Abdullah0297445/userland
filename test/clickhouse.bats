@@ -7,7 +7,7 @@ setup_file() {
 CLICKHOUSE_PASSWORD=clickhouse-password
 EOF
 	compose down --volumes --remove-orphans
-	compose up --detach --wait clickhouse
+	compose up --detach --wait clickhouse clickhouse-dumper
 }
 
 teardown_file() {
@@ -29,6 +29,14 @@ admin() {
 
 printed() {
 	sed -n "s/^  $1=//p" <<<"$output"
+}
+
+in_dumper() {
+	docker exec clickhouse-dumper "$@"
+}
+
+newest_run() {
+	in_dumper ls /backups/clickhouse | grep -x '[0-9]\{8\}T[0-9]\{6\}Z' | tail -n 1
 }
 
 @test "a database added on ClickHouse logs in with the printed DSN, and its user works in it" {
@@ -183,4 +191,27 @@ printed() {
 	[ "$output" = "kept" ]
 	run admin "SELECT 1"
 	[ "$output" = "1" ]
+}
+
+@test "a run on ClickHouse archives the users and every database, and a database added later is archived without being named" {
+	run --separate-stderr bin/add-database --clickhouse ledger
+	[ "$status" -eq 0 ]
+	run --separate-stderr in_dumper dumper now
+	[ "$status" -eq 0 ]
+	first=$(newest_run)
+	[ -n "$first" ]
+	in_dumper sh -c "tar -xOf /backups/clickhouse/$first/globals.tar | grep -aq 'USER ledger'"
+	in_dumper tar -tf "/backups/clickhouse/$first/databases/ledger.tar" .backup >/dev/null
+	run in_dumper test -e "/backups/clickhouse/$first/databases/system.tar"
+	[ "$status" -ne 0 ]
+
+	run --separate-stderr bin/add-database --clickhouse later
+	[ "$status" -eq 0 ]
+	run --separate-stderr in_dumper dumper now
+	[ "$status" -eq 0 ]
+	second=$(newest_run)
+	[ "$second" != "$first" ]
+	in_dumper tar -tf "/backups/clickhouse/$second/databases/later.tar" .backup >/dev/null
+	run in_dumper test -e "/backups/clickhouse/$first/databases/later.tar"
+	[ "$status" -ne 0 ]
 }

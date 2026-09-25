@@ -99,7 +99,7 @@ on_network() {
 @test "postgres runs with nothing else" {
 	run --separate-stderr config_of postgres
 	[ "$status" -eq 0 ]
-	[ "$(services)" = "pgbouncer-session pgbouncer-transaction postgres-18 traefik" ]
+	[ "$(services)" = "pgbouncer-session pgbouncer-transaction postgres-18 postgres-dumper traefik" ]
 }
 
 @test "pgadmin runs with postgres, and is refused without it" {
@@ -113,7 +113,7 @@ on_network() {
 @test "clickhouse runs with nothing else" {
 	run --separate-stderr config_of clickhouse
 	[ "$status" -eq 0 ]
-	[ "$(services)" = "clickhouse traefik" ]
+	[ "$(services)" = "clickhouse clickhouse-dumper traefik" ]
 }
 
 @test "metabase runs with postgres, and is refused without it" {
@@ -151,10 +151,18 @@ on_network() {
 	[[ "$output" == *'depends on undefined service "pgbouncer-session"'* ]]
 }
 
-@test "the archivist runs with nothing else" {
+@test "the archivist runs with nothing else, and reads no datastore's password" {
+	without POSTGRES_PASSWORD
+	without CLICKHOUSE_PASSWORD
 	run --separate-stderr config_of archivist
 	[ "$status" -eq 0 ]
 	[ "$(services)" = "archivist traefik" ]
+}
+
+@test "the archivist joins no datastore's network, and shares only the backup folder with the dumpers" {
+	run --separate-stderr config_of "${products[@]}"
+	[ "$(jq -r '.services.archivist.networks | keys | join(" ")' <<<"$output")" = "default" ]
+	[ "$(jq -r '[.services | to_entries[] | select(any(.value.volumes[]?; .source == "backups")) | .key] | join(" ")' <<<"$output")" = "archivist clickhouse clickhouse-dumper postgres-dumper" ]
 }
 
 @test "every product runs together, in local" {
@@ -209,7 +217,7 @@ on_network() {
 	run --separate-stderr config_of "${products[@]}"
 	[ "$(jq -r '.networks.postgres.name' <<<"$output")" = userland_postgres ]
 	[ "$(jq -r '.networks.traefik.name' <<<"$output")" = userland_traefik ]
-	[ "$(on_network postgres-server)" = "archivist pgadmin pgbouncer-session pgbouncer-transaction postgres-18" ]
+	[ "$(on_network postgres-server)" = "pgadmin pgbouncer-session pgbouncer-transaction postgres-18 postgres-dumper" ]
 	[[ " $(on_network postgres) " != *" postgres-18 "* ]]
 }
 

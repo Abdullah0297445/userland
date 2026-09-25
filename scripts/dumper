@@ -1,0 +1,267 @@
+#!/bin/sh
+set -eu
+
+datastore=${DUMPER_DATASTORE:?}
+hours=${DUMPER_HOURS:-24}
+folder=/backups/$datastore
+record=$folder/last-run
+lock=/tmp/dumper.lock
+
+say() {
+	echo "$datastore-dumper: $*"
+}
+
+complain() {
+	echo "$datastore-dumper: $*" >&2
+}
+
+case $hours in
+1 | 2 | 3 | 4 | 6 | 8 | 12 | 24) ;;
+*)
+	complain "every $hours hours does not divide a day. Use 1, 2, 3, 4, 6, 8, 12 or 24."
+	exit 1
+	;;
+esac
+interval=$((hours * 3600))
+
+last_slot() {
+	now=$(date +%s)
+	echo $((now - now % interval))
+}
+
+at() {
+	date -u -d "@$1" '+%Y-%m-%d %H:%M UTC'
+}
+
+case $datastore in
+postgres)
+	reachable() {
+		psql -tAX -c 'SELECT 1' >/dev/null 2>&1
+	}
+
+	databases() {
+		psql -tAX -v ON_ERROR_STOP=1 -c "SELECT datname FROM pg_database WHERE datallowconn AND NOT datistemplate AND datname <> 'postgres' ORDER BY datname"
+	}
+
+	prepare() {
+		mkdir -p "$1/databases"
+	}
+
+	archive_globals() {
+		pg_dumpall --globals-only --file="$1/globals.sql"
+	}
+
+	archive_database() {
+		pg_dump --format=custom --compress=0 --file="$1/databases/$2.dump" "$2"
+	}
+
+	restored_file() {
+		echo "/backups/restore/postgres/databases/$1.dump"
+	}
+
+	restore_database() {
+		if [ -n "$2" ]; then
+			psql -tAX -v ON_ERROR_STOP=1 -c "CREATE DATABASE \"$2\"" >/dev/null &&
+				pg_restore --no-owner --no-acl --exit-on-error --dbname="$2" "$(restored_file "$1")"
+		else
+			psql -tAX -v ON_ERROR_STOP=1 -c "DROP DATABASE IF EXISTS \"$1\" WITH (FORCE)" >/dev/null &&
+				pg_restore --create --exit-on-error --dbname=postgres "$(restored_file "$1")"
+		fi
+	}
+	;;
+clickhouse)
+	clickhouse_image_user=101:101
+
+	query() {
+		clickhouse-client --query "$1"
+	}
+
+	reachable() {
+		query 'SELECT 1' >/dev/null 2>&1
+	}
+
+	databases() {
+		query "SELECT name FROM system.databases WHERE name NOT IN ('system', 'information_schema', 'INFORMATION_SCHEMA') ORDER BY name"
+	}
+
+	prepare() {
+		chown "$clickhouse_image_user" "$folder"
+	}
+
+	archive_globals() {
+		query "BACKUP TABLE system.users TO File('${1#/backups/}/globals.tar')" >/dev/null
+	}
+
+	archive_database() {
+		query "BACKUP DATABASE \`$2\` TO File('${1#/backups/}/databases/$2.tar')" >/dev/null
+	}
+
+	restored_file() {
+		echo "/backups/restore/clickhouse/databases/$1.tar"
+	}
+
+	restore_database() {
+		from="File('restore/clickhouse/databases/$1.tar')"
+		if [ -n "$2" ]; then
+			query "RESTORE DATABASE \`$1\` AS \`$2\` FROM $from" >/dev/null
+		else
+			query "DROP DATABASE IF EXISTS \`$1\` SYNC" &&
+				query "RESTORE DATABASE \`$1\` FROM $from" >/dev/null
+		fi
+	}
+	;;
+*)
+	complain "DUMPER_DATASTORE is $datastore, and it must be postgres or clickhouse."
+	exit 1
+	;;
+esac
+
+archive() {
+	started=$(date -u +%Y%m%dT%H%M%SZ)
+	while [ -e "$folder/$started" ] || [ -e "$folder/$started.writing" ]; do
+		sleep 1
+		started=$(date -u +%Y%m%dT%H%M%SZ)
+	done
+	writing=$folder/$started.writing
+	prepare "$writing" || return 1
+	failed=0
+	globals=1
+	archive_globals "$writing" || {
+		complain "the globals were not archived"
+		failed=1
+		globals=0
+	}
+	names=$(databases) || {
+		complain "could not read the databases, so none was archived"
+		failed=1
+		names=
+	}
+	count=0
+	while IFS= read -r name; do
+		[ -n "$name" ] || continue
+		case $name in
+		*/* | *\'* | *\`*)
+			complain "$name has a /, a ' or a \` in its name, so it was not archived"
+			failed=1
+			continue
+			;;
+		esac
+		if archive_database "$writing" "$name"; then
+			count=$((count + 1))
+		else
+			complain "$name was not archived"
+			rm -rf "$writing/databases/$name".*
+			failed=1
+		fi
+	done <<EOF
+$names
+EOF
+	if [ "$count" -eq 0 ] && [ "$globals" -eq 0 ]; then
+		rm -rf "$writing"
+		return 1
+	fi
+	mv "$writing" "$folder/$started" || return 1
+	say "archived $count databases into $folder/$started"
+	return "$failed"
+}
+
+run_slot() {
+	until reachable; do
+		complain "cannot reach $datastore; trying again in a minute"
+		sleep 60
+	done
+	flock 9
+	if archive; then
+		status=ok
+	else
+		status=failed
+	fi
+	flock -u 9
+	echo "$1 $status" >"$record.new"
+	mv "$record.new" "$record"
+}
+
+serve() {
+	mkdir -p "$folder"
+	exec 9>"$lock"
+	flock 9
+	for leftover in "$folder"/*.writing; do
+		[ -e "$leftover" ] || continue
+		rm -rf "$leftover"
+		say "removed $leftover, which a stopped run left behind"
+	done
+	flock -u 9
+	if [ ! -f "$record" ]; then
+		echo "$(last_slot) ok" >"$record"
+		say "first start, so nothing runs until the next slot"
+	fi
+	say "runs every $hours hours from 00:00 UTC; the next is at $(at $(($(last_slot) + interval)))"
+	while :; do
+		due=$(last_slot)
+		last=$(cut -d ' ' -f 1 "$record")
+		case $last in
+		'' | *[!0-9]*) last=0 ;;
+		esac
+		if [ "$last" -lt "$due" ]; then
+			run_slot "$due"
+		fi
+		next=$(($(last_slot) + interval))
+		sleep $((next - $(date +%s)))
+	done
+}
+
+now() {
+	if ! reachable; then
+		complain "cannot reach $datastore, so nothing was archived"
+		exit 1
+	fi
+	mkdir -p "$folder"
+	exec 9>"$lock"
+	flock 9
+	archive
+}
+
+restore() {
+	if [ $# -lt 1 ] || [ $# -gt 2 ]; then
+		complain "usage: dumper restore NAME [OTHER]"
+		exit 2
+	fi
+	file=$(restored_file "$1")
+	if [ ! -f "$file" ]; then
+		complain "there is no archive of $1 at $file. bin/restore puts one there."
+		exit 1
+	fi
+	if restore_database "$1" "${2:-}"; then
+		rm -f "$file"
+	else
+		complain "the restore of $1 failed."
+		exit 1
+	fi
+}
+
+health() {
+	[ -f "$record" ] || exit 0
+	read -r last status <"$record"
+	if [ "$status" != ok ]; then
+		echo "the last run failed; docker logs $datastore-dumper says what"
+		exit 1
+	fi
+	if [ $(($(date +%s) - last)) -ge $((2 * interval)) ]; then
+		echo "no run has finished since $(at "$last")"
+		exit 1
+	fi
+}
+
+case "${1:-}" in
+"") serve ;;
+now) now ;;
+restore)
+	shift
+	restore "$@"
+	;;
+health) health ;;
+*)
+	complain "usage: dumper [now | restore NAME [OTHER] | health]"
+	exit 2
+	;;
+esac

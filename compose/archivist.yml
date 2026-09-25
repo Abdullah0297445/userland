@@ -3,13 +3,14 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: userland/archivist:0.19.1
+    image: userland/archivist
     pull_policy: build
     container_name: archivist
     restart: unless-stopped
+    init: true
     environment:
       RESTIC_REPOSITORY: s3:${ARCHIVIST_S3_ENDPOINT:?}/${ARCHIVIST_S3_BUCKET:?}
-      RESTIC_PASSWORD_COMMAND: /usr/local/bin/archivist-key
+      RESTIC_PASSWORD_COMMAND: archivist-key
       RESTIC_HOST: archivist
       AWS_ACCESS_KEY_ID: ${ARCHIVIST_S3_ACCESS_KEY_ID:?}
       AWS_SECRET_ACCESS_KEY: ${ARCHIVIST_S3_SECRET_ACCESS_KEY:?}
@@ -19,22 +20,14 @@ services:
       ARCHIVIST_KEY_REGION: ${ARCHIVIST_KEY_REGION:?}
       ARCHIVIST_KEY_ACCESS_KEY_ID: ${ARCHIVIST_KEY_ACCESS_KEY_ID:?}
       ARCHIVIST_KEY_SECRET_ACCESS_KEY: ${ARCHIVIST_KEY_SECRET_ACCESS_KEY:?}
-      ARCHIVIST_SCHEDULE: ${ARCHIVIST_SCHEDULE:-@daily}
-      PGHOST: postgres-18
-      PGUSER: postgres
-      PGPASSWORD: ${POSTGRES_PASSWORD:?}
-      CLICKHOUSE_HOST: clickhouse
-      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:?}
-    networks:
-      - postgres-server
-      - clickhouse
     volumes:
-      - clickhouse_backups:/clickhouse
+      - backups:/backups
+    healthcheck:
+      test: ["CMD", "archivist", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 1
     mem_limit: ${ARCHIVIST_MEM_LIMIT:-0}
 
-networks:
-  postgres-server: {}
-  clickhouse: {}
-
 volumes:
-  clickhouse_backups: {}
+  backups: {}
