@@ -80,8 +80,12 @@ _Avoid_: tenant, client, app, application
 **Provisioning**:
 Making the users and databases a product needs exist before it runs. What userland's own
 products need converges on their settings; what a consumer was given is never changed once it
-exists. A consumer is provisioned by the same path.
+exists. A consumer is provisioned by hand, with a helper.
 _Avoid_: seeding, bootstrapping, init, setup, migration
+
+**Helper**:
+A small POSIX sh script you run on the host, to do what compose can't. It needs only docker.
+_Avoid_: tool, CLI, command, wrapper
 
 **Access key**:
 A key pair that reaches one bucket, or one secret store, and nothing else. Two buckets

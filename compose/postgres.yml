@@ -30,6 +30,8 @@ services:
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?}
+      PGBOUNCER_AUTH_USER: pgbouncer_auth
+      PGBOUNCER_AUTH_PASSWORD: ${PGBOUNCER_AUTH_PASSWORD:?}
     networks:
       - postgres-server
     volumes:
