@@ -8,7 +8,7 @@ POSTGRES_PASSWORD=postgres-password
 PGBOUNCER_AUTH_PASSWORD=pgbouncer-auth-password
 EOF
 	compose down --volumes --remove-orphans
-	compose up --detach --wait postgres-18 pgbouncer-transaction pgbouncer-session
+	compose up --detach --wait postgres-18 pgbouncer-transaction pgbouncer-session postgres-dumper
 }
 
 teardown_file() {
@@ -30,6 +30,18 @@ superuser() {
 
 printed() {
 	sed -n "s/^  $1=//p" <<<"$output"
+}
+
+in_dumper() {
+	docker exec postgres-dumper "$@"
+}
+
+runs() {
+	in_dumper ls /backups/postgres | grep -x '[0-9]\{8\}T[0-9]\{6\}Z' || true
+}
+
+newest_run() {
+	runs | tail -n 1
 }
 
 @test "the doors look passwords up as pgbouncer_auth, which is no superuser and inherits nothing" {
@@ -281,7 +293,7 @@ printed() {
 	password=$(printed PGBOUNCER_AUTH_PASSWORD)
 	[ "${#password}" -eq 32 ]
 	sed -i "s/^PGBOUNCER_AUTH_PASSWORD=.*/PGBOUNCER_AUTH_PASSWORD=$password/" "$env_file"
-	compose up --detach --wait postgres-18 pgbouncer-transaction pgbouncer-session
+	compose up --detach --wait postgres-18 pgbouncer-transaction pgbouncer-session postgres-dumper
 	run connect "$url" "SELECT current_user"
 	[ "$status" -eq 0 ]
 	[ "$output" = "gate" ]
@@ -325,4 +337,62 @@ printed() {
 	run --separate-stderr bin/remove-database ghost </dev/null
 	[ "$status" -eq 0 ]
 	[ "$output" = "There is no database ghost, and no user or role of that name. Nothing was dropped." ]
+}
+
+@test "a run archives the globals and every database, and a database added later is archived without being named" {
+	run --separate-stderr bin/add-database ledger
+	[ "$status" -eq 0 ]
+	run --separate-stderr in_dumper dumper now
+	[ "$status" -eq 0 ]
+	first=$(newest_run)
+	[ -n "$first" ]
+	in_dumper grep -qx 'CREATE ROLE ledger;' "/backups/postgres/$first/globals.sql"
+	in_dumper pg_restore --list "/backups/postgres/$first/databases/ledger.dump" >/dev/null
+	run in_dumper test -e "/backups/postgres/$first/databases/postgres.dump"
+	[ "$status" -ne 0 ]
+
+	run --separate-stderr bin/add-database later
+	[ "$status" -eq 0 ]
+	run --separate-stderr in_dumper dumper now
+	[ "$status" -eq 0 ]
+	second=$(newest_run)
+	[ "$second" != "$first" ]
+	in_dumper pg_restore --list "/backups/postgres/$second/databases/later.dump" >/dev/null
+	run in_dumper test -e "/backups/postgres/$first/databases/later.dump"
+	[ "$status" -ne 0 ]
+}
+
+@test "a run keeps its temporary name until every database is archived" {
+	run --separate-stderr bin/add-database slow
+	[ "$status" -eq 0 ]
+	docker exec postgres-18 psql -v ON_ERROR_STOP=1 -X -q -U postgres -d slow -c "CREATE TABLE held (id int)"
+	docker exec postgres-18 psql -X -q -U postgres -d slow -c "BEGIN; LOCK TABLE held IN ACCESS EXCLUSIVE MODE; SELECT pg_sleep(8); COMMIT;" >/dev/null &
+	sleep 2
+	before=$(runs | wc -l)
+	in_dumper dumper now >/dev/null 2>&1 &
+	sleep 3
+	run in_dumper sh -c 'ls -d /backups/postgres/*.writing'
+	[ "$status" -eq 0 ]
+	[ "$(runs | wc -l)" -eq "$before" ]
+	wait
+	[ "$(runs | wc -l)" -eq $((before + 1)) ]
+	run in_dumper sh -c 'ls -d /backups/postgres/*.writing'
+	[ "$status" -ne 0 ]
+	in_dumper pg_restore --list "/backups/postgres/$(newest_run)/databases/slow.dump" >/dev/null
+}
+
+@test "a run missed while the dumper was down is caught up after a restart, once" {
+	stale=$(($(date +%s) - 3 * 86400))
+	in_dumper sh -c "echo '$stale ok' >/backups/postgres/last-run"
+	before=$(runs | wc -l)
+	docker restart postgres-dumper >/dev/null
+	local waited=0
+	while [ "$(runs | wc -l)" -eq "$before" ] && [ "$waited" -lt 60 ]; do
+		sleep 1
+		waited=$((waited + 1))
+	done
+	[ "$(runs | wc -l)" -eq $((before + 1)) ]
+	docker restart postgres-dumper >/dev/null
+	sleep 5
+	[ "$(runs | wc -l)" -eq $((before + 1)) ]
 }

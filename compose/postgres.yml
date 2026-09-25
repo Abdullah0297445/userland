@@ -63,9 +63,38 @@ services:
       DEFAULT_POOL_SIZE: 100
     mem_limit: ${PGBOUNCER_SESSION_MEM_LIMIT:-0}
 
+  postgres-dumper:
+    image: pgvector/pgvector:pg18-trixie
+    container_name: postgres-dumper
+    restart: unless-stopped
+    init: true
+    depends_on:
+      postgres-18:
+        condition: service_healthy
+    entrypoint: ["dumper"]
+    environment:
+      PGHOST: postgres-18
+      PGUSER: postgres
+      PGPASSWORD: ${POSTGRES_PASSWORD:?}
+      PGDATABASE: postgres
+      DUMPER_DATASTORE: postgres
+      DUMPER_HOURS: ${POSTGRES_DUMPER_HOURS:-24}
+    networks:
+      - postgres-server
+    volumes:
+      - backups:/backups
+      - ./scripts/dumper:/usr/local/bin/dumper:ro
+    healthcheck:
+      test: ["CMD", "dumper", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 1
+    mem_limit: ${POSTGRES_DUMPER_MEM_LIMIT:-0}
+
 networks:
   postgres: {}
   postgres-server: {}
 
 volumes:
   postgres_data: {}
+  backups: {}

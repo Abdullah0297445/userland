@@ -109,9 +109,9 @@ reaches no other database. Postgres calls a user that can log in a role; here it
 _Avoid_: tenant, role (for this), account, owner (as its name)
 
 **Superuser**:
-The single Postgres superuser that provisions databases and that the archivist archives them
+The single Postgres superuser that provisions databases and that the dumper archives them
 as. No other user holds it. On ClickHouse the same seat is the user `default`, which
-provisioning and the archivist use.
+provisioning and the dumper use.
 _Avoid_: engine superuser, admin, root, postgres user
 
 **Door**:
@@ -145,9 +145,9 @@ archives stay until someone removes them with restic, from a machine whose key m
 _Avoid_: expiry, lifecycle (for the concept), cleanup, pruning
 
 **Globals**:
-The Postgres objects outside every database: the users and their passwords.
-One backup holds them for the whole of Postgres. It is as sensitive as the data, and it
-goes only into a Postgres being rebuilt.
+What a datastore holds outside every database: its users and their passwords, and on
+ClickHouse their grants too. One archive holds them for the whole datastore. It is as
+sensitive as the data, and it goes only into a datastore being rebuilt.
 _Avoid_: users, roles file, cluster objects
 
 **Drill**:
@@ -173,14 +173,33 @@ _Avoid_: public role, guest
 ## The archivist
 
 **Archivist**:
-The product that keeps every database off this host, in a bucket of its own, as archives
-only the master key opens.
+The product that takes every archive in the backup folder off this host, into a bucket of its
+own, where only the master key opens it. It knows no datastore and no database, and nothing
+it does depends on a dumper.
 _Avoid_: fort, backup service, backup container
+
+**Dumper**:
+The container in a datastore product that archives each of its databases into the backup
+folder, on a schedule of its own, and writes an archive back on a restore. It finds every
+database by itself, so none is ever named. What it writes is an archive, never a dump.
+_Avoid_: backup container, exporter, backup job
+
+**Backup folder**:
+The one place on the host where every dumper leaves its archives, each datastore in a folder
+of its own, until the archivist has taken them off the host. An archive still in it is not
+yet safe.
+_Avoid_: staging area, spool, backups (for the concept)
 
 **Master key**:
 The one secret that encrypts every archive the archivist keeps. It lives in a secret store,
 never on the host, and the archivist reads it at each run. Lose it and every archive is waste.
 _Avoid_: passphrase, backup key, encryption key, secret
+
+**Repository**:
+What restic keeps inside the archivist's bucket: every archive, encrypted under the master key.
+It is not the bucket. It is made once, by hand, after the bucket, and never by the archivist on
+its own, so a repository that is missing is an alarm and not a fresh start.
+_Avoid_: bucket (for this), repo, store, vault
 
 **Secret store**:
 A service you own, outside the host, that holds the master key. userland reads it and
@@ -188,6 +207,8 @@ never writes it. An external dependency.
 _Avoid_: vault, parameter store (as the category), key store, KMS
 
 **Restore**:
-Writing an archive back into the datastore it came from. Deliberate, by hand, never on a
-schedule.
+Writing an archive back into the datastore it came from: into a new database of another
+name, which touches nothing live, or over the database it came from, which it replaces
+whole. It never makes a user, so the second needs the database's user to still exist.
+Deliberate, by hand, never on a schedule.
 _Avoid_: recover, pull, sync
