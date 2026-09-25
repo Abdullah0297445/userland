@@ -1,6 +1,6 @@
 # userland
 
-One host, one compose project, and containers you switch on and off. This file is the
+One host, one compose project, and products you switch on and off. This file is the
 glossary. It holds no implementation detail.
 
 ## Language
@@ -10,15 +10,20 @@ This repo, and everything it runs on one host as one compose project. The word c
 what you clone and what ends up running.
 _Avoid_: platform, stack, engine, system, installation
 
+**Product**:
+What you switch on: a set of containers that are always on together, such as langfuse's web,
+worker and Redis. One product is one compose file. pgadmin is a product of its own, so
+Postgres without pgadmin is a valid choice.
+_Avoid_: stack, bundle, service, module, app
+
 **Container**:
-The unit you switch on. One container is one compose service, and nothing larger or
-smaller is ever switched; Postgres without pgadmin is a valid choice.
+One compose service. Every container belongs to exactly one product, and is switched on and
+off with it, never alone.
 _Avoid_: service, unit, component, module, profile
 
-**Template**:
-A tracked file the CLI renders a container's compose definition from, one per product.
-Which containers share a template carries no meaning, and nothing is ever run from one.
-_Avoid_: fragment, compose file, stack file, override
+**Selection**:
+The set of products switched on.
+_Avoid_: enabled set, profile set, configuration
 
 **Datastore**:
 A container that stores structured data, such as Postgres, Redis or ClickHouse.
@@ -30,43 +35,41 @@ always an external dependency.
 _Avoid_: file store, blob store, bucket (for the store), S3 (as the category), datastore
 
 **Dependency**:
-Something a container needs in order to run. Every dependency has a severity, required or
+Something a product needs in order to run. Every dependency has a severity, required or
 optional, and a type, internal or external.
 _Avoid_: prerequisite, link, requirement
 
 **Required**:
-A dependency without which the container cannot run. A selection missing one is refused.
+A dependency without which the product cannot run. A selection missing one is refused.
 _Avoid_: must-have, hard, mandatory
 
 **Optional**:
-A dependency without which the container runs, but degraded. A selection missing one gets
-a warning and proceeds.
+A dependency without which the product runs, but degraded.
 _Avoid_: soft, nice-to-have, recommended
 
 **Internal**:
-The type of a dependency on another container.
+The type of a dependency on another product.
 _Avoid_: local, built-in, bundled
 
 **External**:
-The type of a dependency on something userland never runs, such as an object store. The
-interview collects its address and access key rather than switching anything on.
+The type of a dependency on something userland never runs, such as an object store. You
+make it; userland is only told where it is and given the access key that reaches it.
 _Avoid_: bring-your-own, third-party, remote, cloud
 
 **Blocked by**:
-A required dependency, read from the container that has it. langfuse-web is blocked by
-Postgres.
+A required dependency, read from the product that has it. langfuse is blocked by postgres.
 _Avoid_: depends on, downstream of
 
 **Blocking**:
-A required dependency, read from the container that is depended on. Postgres is blocking
-langfuse-web, and cannot be switched off while it is.
+A required dependency, read from the product that is depended on. postgres is blocking
+langfuse, and cannot be switched off while it is.
 _Avoid_: dependents, upstream of, parent
 
 **Visibility**:
 Whether userland answers to names only this machine resolves, or to real hostnames on the
 internet. It is **local** (`*.localhost`, no domain, no certificate; reachable by anyone on a
 network it shares who sends the name) or **public** (real hostnames, TLS), chosen once for the
-whole of userland and never per container.
+whole of userland and never per product.
 _Avoid_: mode, environment, stage, dev/prod, exposure
 
 **Consumer**:
@@ -74,77 +77,17 @@ A project of your own that uses userland and is not part of it. It may have a da
 Postgres and it may sit behind traefik; userland never runs it.
 _Avoid_: tenant, client, app, application
 
-**Contract**:
-A short summary of what is on and how to reach each part of it, to glance at while starting
-a consumer. Nothing depends on it.
-_Avoid_: hand-off, handshake, connection details, exports, integration
-
-## The interview
-
-**Interview**:
-One run of the CLI's questions. It ends in a selection or a refusal, and a re-run asks
-only about what is new.
-_Avoid_: wizard, setup, install, onboarding
-
-**Selection**:
-The set of containers switched on, as the interview last recorded it.
-_Avoid_: enabled set, profile set, configuration
-
-**Manifest**:
-The one record the interview trusts for what every container depends on and what it needs
-asked.
-_Avoid_: registry, catalog, dependency file
-
-**Render**:
-Writing the one compose file the host runs, from the manifest, the templates and the
-selection. It holds only what is switched on, it holds no secret, and nobody edits it.
-_Avoid_: generate, build, compile
-
-**Apply**:
-Making the host match the selection and `.env`: render, bring up, provision, print. Every
-change to the selection or to `.env` ends with one.
-_Avoid_: deploy, sync, reconcile, up
-
-**Refusal**:
-The interview stopping on a selection that cannot run, naming what is missing.
-_Avoid_: error, validation failure, abort
-
-**Warning**:
-The interview naming a selection that runs but is degraded, and proceeding.
-_Avoid_: notice, hint, caution
-
 **Provisioning**:
-Making what a selection depends on exist before it runs, whether users, databases, buckets
-or access keys. What userland's own containers need converges on `.env`; what a consumer
-was given is never changed once it exists. A consumer is provisioned by the same path.
+Making the users and databases a product needs exist before it runs. What userland's own
+products need converges on their settings; what a consumer was given is never changed once it
+exists. A consumer is provisioned by the same path.
 _Avoid_: seeding, bootstrapping, init, setup, migration
-
-**Reclaim**:
-Dropping what a switched-off container left behind, such as its volume or its database.
-Only on request, and only after naming it.
-_Avoid_: cleanup, purge, prune, delete
 
 **Access key**:
 A key pair that reaches one bucket, or one secret store, and nothing else. Two buckets
-means two access keys, never shared, and fort's bucket and fort's master key are reached
-by two.
+means two access keys, never shared, and the archivist's bucket and its master key are
+reached by two.
 _Avoid_: identity, IAM user, credentials, service account, token
-
-**Offer**:
-The interview proposing to make an external dependency for you on AWS, with admin
-credentials it uses once and never writes. Declining it prints the checklist.
-_Avoid_: auto-provisioning, create-it-for-me, wizard, setup
-
-**Checklist**:
-The steps to make an external dependency by hand at any provider, printed with your names
-filled in when you decline the offer. The README holds the long form.
-_Avoid_: manual path, instructions, guide, runbook
-
-**Adopt**:
-Reusing what already exists in your account, whether a bucket, a parameter or the AWS
-user an access key belongs to, instead of making a second one. The offer adopts and never
-overwrites.
-_Avoid_: reuse, import, attach, take over
 
 ## Postgres and ClickHouse
 
@@ -162,9 +105,9 @@ reaches no other database. Postgres calls a user that can log in a role; here it
 _Avoid_: tenant, role (for this), account, owner (as its name)
 
 **Superuser**:
-The single Postgres superuser that provisions databases and that fort archives them as. No
-other user holds it. On ClickHouse the same seat is the user `default`, which provisioning and
-fort use.
+The single Postgres superuser that provisions databases and that the archivist archives them
+as. No other user holds it. On ClickHouse the same seat is the user `default`, which
+provisioning and the archivist use.
 _Avoid_: engine superuser, admin, root, postgres user
 
 **Door**:
@@ -188,14 +131,13 @@ door.
 _Avoid_: connection URL, database URL, credentials
 
 **Archive**:
-The backup of one database, or of one listed file. One archive restores one database or
-one file alone.
+The backup of one database. One archive restores one database alone.
 _Avoid_: dump, backup file, snapshot, copy
 
 **Retention**:
 How long objects stay in their bucket. A rule at your provider sets it, never userland,
-which deletes nothing it has written. fort's bucket may carry no rule at all, so its archives
-stay until someone removes them with restic, from a machine whose key may delete.
+which deletes nothing it has written. The archivist's bucket may carry no rule at all, so its
+archives stay until someone removes them with restic, from a machine whose key may delete.
 _Avoid_: expiry, lifecycle (for the concept), cleanup, pruning
 
 **Globals**:
@@ -224,16 +166,16 @@ The role a PostgREST request takes when it carries no valid token. It cannot log
 directly.
 _Avoid_: public role, guest
 
-## fort
+## The archivist
 
-**Listed file**:
-A file on the host, named by its absolute path, that fort keeps. userland's own `.env` is
-always one.
-_Avoid_: env file, secret file, watched file, tracked file
+**Archivist**:
+The product that keeps every database off this host, in a bucket of its own, as archives
+only the master key opens.
+_Avoid_: fort, backup service, backup container
 
 **Master key**:
-The one secret that encrypts every file fort keeps. It lives in a secret store, never on
-the host, and fort reads it at each run. Lose it and every archive is waste.
+The one secret that encrypts every archive the archivist keeps. It lives in a secret store,
+never on the host, and the archivist reads it at each run. Lose it and every archive is waste.
 _Avoid_: passphrase, backup key, encryption key, secret
 
 **Secret store**:
@@ -242,6 +184,6 @@ never writes it. An external dependency.
 _Avoid_: vault, parameter store (as the category), key store, KMS
 
 **Restore**:
-Writing every archive fort holds back onto the host at the path it came from, over
-whatever is there. Deliberate, by hand, never on a schedule.
+Writing an archive back into the datastore it came from. Deliberate, by hand, never on a
+schedule.
 _Avoid_: recover, pull, sync

@@ -8,5 +8,5 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - run: ./bootstrap check
-      - run: docker run --rm --user "$(id -u):$(id -g)" --volume "$PWD":/src --workdir /src --volume userland-go:/go --env HOME=/go --env GOCACHE=/go/cache --env GOFLAGS=-buildvcs=false golang:1.27-alpine go test ./...
+      - run: docker run --rm --volume "$PWD":/mnt --workdir /mnt koalaman/shellcheck:stable scripts/* test/*.bats
+      - run: docker run --rm --volume /var/run/docker.sock:/var/run/docker.sock --volume "$PWD":"$PWD" --workdir "$PWD" docker:29-cli sh -c 'apk add --quiet --no-cache bats jq && bats test'

@@ -1,89 +1,131 @@
-{{ define "langfuse.url" }}{{ if .On "traefik" }}{{ if eq .Visibility "public" }}https://langfuse.${DOMAIN}{{ else }}http://langfuse.localhost{{ end }}{{ else }}http://localhost:3001{{ end }}{{ end }}
-
-{{ define "langfuse.environment" }}
+x-langfuse-environment: &langfuse-environment
   HOSTNAME: 0.0.0.0
-  NEXTAUTH_URL: {{ template "langfuse.url" . }}
-  DATABASE_URL: postgresql://{{ .Postgres.Database }}:{{ ref .Postgres.Password }}@pgbouncer-transaction:5432/{{ .Postgres.Database }}
-  SALT: ${LANGFUSE_SALT}
-  ENCRYPTION_KEY: ${LANGFUSE_ENCRYPTION_KEY}
+  NEXTAUTH_URL: ${SCHEME:?}://langfuse.${DOMAIN:?}
+  DATABASE_URL: postgresql://langfuse:${LANGFUSE_DB_PASSWORD:?}@pgbouncer-transaction:5432/langfuse
+  SALT: ${LANGFUSE_SALT:?}
+  ENCRYPTION_KEY: ${LANGFUSE_ENCRYPTION_KEY:?}
   CLICKHOUSE_URL: http://clickhouse:8123
-  CLICKHOUSE_USER: {{ .ClickHouse.Database }}
-  CLICKHOUSE_PASSWORD: {{ ref .ClickHouse.Password }}
-  CLICKHOUSE_DB: {{ .ClickHouse.Database }}
+  CLICKHOUSE_USER: langfuse
+  CLICKHOUSE_PASSWORD: ${LANGFUSE_CLICKHOUSE_PASSWORD:?}
+  CLICKHOUSE_DB: langfuse
   CLICKHOUSE_CLUSTER_ENABLED: false
   REDIS_HOST: langfuse-redis
   REDIS_PORT: 6379
-  REDIS_AUTH: ${LANGFUSE_REDIS_PASSWORD}
-  LANGFUSE_S3_EVENT_UPLOAD_BUCKET: ${LANGFUSE_S3_BUCKET}
+  REDIS_AUTH: ${LANGFUSE_REDIS_PASSWORD:?}
+  LANGFUSE_S3_EVENT_UPLOAD_BUCKET: ${LANGFUSE_S3_BUCKET:?}
   LANGFUSE_S3_EVENT_UPLOAD_PREFIX: events/
-  LANGFUSE_S3_EVENT_UPLOAD_REGION: ${LANGFUSE_S3_REGION}
-  LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: ${LANGFUSE_S3_ENDPOINT}
-  LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: ${LANGFUSE_S3_ACCESS_KEY_ID}
-  LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: ${LANGFUSE_S3_SECRET_ACCESS_KEY}
+  LANGFUSE_S3_EVENT_UPLOAD_REGION: ${LANGFUSE_S3_REGION:?}
+  LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: ${LANGFUSE_S3_ENDPOINT:?}
+  LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: ${LANGFUSE_S3_ACCESS_KEY_ID:?}
+  LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: ${LANGFUSE_S3_SECRET_ACCESS_KEY:?}
   LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: false
-  LANGFUSE_S3_MEDIA_UPLOAD_BUCKET: ${LANGFUSE_S3_BUCKET}
+  LANGFUSE_S3_MEDIA_UPLOAD_BUCKET: ${LANGFUSE_S3_BUCKET:?}
   LANGFUSE_S3_MEDIA_UPLOAD_PREFIX: media/
-  LANGFUSE_S3_MEDIA_UPLOAD_REGION: ${LANGFUSE_S3_REGION}
-  LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: ${LANGFUSE_S3_ENDPOINT}
-  LANGFUSE_S3_MEDIA_UPLOAD_ACCESS_KEY_ID: ${LANGFUSE_S3_ACCESS_KEY_ID}
-  LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY: ${LANGFUSE_S3_SECRET_ACCESS_KEY}
+  LANGFUSE_S3_MEDIA_UPLOAD_REGION: ${LANGFUSE_S3_REGION:?}
+  LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: ${LANGFUSE_S3_ENDPOINT:?}
+  LANGFUSE_S3_MEDIA_UPLOAD_ACCESS_KEY_ID: ${LANGFUSE_S3_ACCESS_KEY_ID:?}
+  LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY: ${LANGFUSE_S3_SECRET_ACCESS_KEY:?}
   LANGFUSE_S3_MEDIA_UPLOAD_FORCE_PATH_STYLE: false
   LANGFUSE_S3_BATCH_EXPORT_ENABLED: true
-  LANGFUSE_S3_BATCH_EXPORT_BUCKET: ${LANGFUSE_S3_BUCKET}
+  LANGFUSE_S3_BATCH_EXPORT_BUCKET: ${LANGFUSE_S3_BUCKET:?}
   LANGFUSE_S3_BATCH_EXPORT_PREFIX: exports/
-  LANGFUSE_S3_BATCH_EXPORT_REGION: ${LANGFUSE_S3_REGION}
-  LANGFUSE_S3_BATCH_EXPORT_ENDPOINT: ${LANGFUSE_S3_ENDPOINT}
-  LANGFUSE_S3_BATCH_EXPORT_ACCESS_KEY_ID: ${LANGFUSE_S3_ACCESS_KEY_ID}
-  LANGFUSE_S3_BATCH_EXPORT_SECRET_ACCESS_KEY: ${LANGFUSE_S3_SECRET_ACCESS_KEY}
+  LANGFUSE_S3_BATCH_EXPORT_REGION: ${LANGFUSE_S3_REGION:?}
+  LANGFUSE_S3_BATCH_EXPORT_ENDPOINT: ${LANGFUSE_S3_ENDPOINT:?}
+  LANGFUSE_S3_BATCH_EXPORT_ACCESS_KEY_ID: ${LANGFUSE_S3_ACCESS_KEY_ID:?}
+  LANGFUSE_S3_BATCH_EXPORT_SECRET_ACCESS_KEY: ${LANGFUSE_S3_SECRET_ACCESS_KEY:?}
   LANGFUSE_S3_BATCH_EXPORT_FORCE_PATH_STYLE: false
-{{- end }}
 
-{{ define "langfuse-web" -}}
-image: langfuse/langfuse:4.41.0
-environment:
-  <<: *userland-environment
-{{ template "langfuse.environment" . }}
-  DIRECT_URL: postgresql://{{ .Postgres.Database }}:{{ ref .Postgres.Password }}@pgbouncer-session:5432/{{ .Postgres.Database }}
-  CLICKHOUSE_MIGRATION_URL: clickhouse://clickhouse:9000
-  NEXTAUTH_SECRET: ${LANGFUSE_NEXTAUTH_SECRET}
-{{- if eq .Visibility "public" }}
-  AUTH_DISABLE_SIGNUP: ${LANGFUSE_AUTH_DISABLE_SIGNUP:-true}
-  LANGFUSE_INIT_ORG_ID: userland
-  LANGFUSE_INIT_USER_EMAIL: ${LANGFUSE_INIT_USER_EMAIL}
-  LANGFUSE_INIT_USER_PASSWORD: ${LANGFUSE_INIT_USER_PASSWORD}
-{{- end }}
-healthcheck:
-  test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:3000/api/public/health"]
-  interval: 15s
-  timeout: 5s
-  retries: 5
-  start_period: 300s
-{{ end }}
+services:
+  langfuse-web:
+    image: langfuse/langfuse:4.41.0
+    container_name: langfuse-web
+    restart: unless-stopped
+    depends_on:
+      pgbouncer-transaction:
+        condition: service_healthy
+      pgbouncer-session:
+        condition: service_healthy
+      langfuse-redis:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+    environment:
+      <<: *langfuse-environment
+      DIRECT_URL: postgresql://langfuse:${LANGFUSE_DB_PASSWORD:?}@pgbouncer-session:5432/langfuse
+      CLICKHOUSE_MIGRATION_URL: clickhouse://clickhouse:9000
+      NEXTAUTH_SECRET: ${LANGFUSE_NEXTAUTH_SECRET:?}
+      AUTH_DISABLE_SIGNUP: ${LANGFUSE_AUTH_DISABLE_SIGNUP:-true}
+      LANGFUSE_INIT_ORG_ID: userland
+      LANGFUSE_INIT_USER_EMAIL: ${LANGFUSE_INIT_USER_EMAIL:?}
+      LANGFUSE_INIT_USER_PASSWORD: ${LANGFUSE_INIT_USER_PASSWORD:?}
+    networks:
+      - langfuse
+      - postgres
+      - clickhouse
+      - traefik
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.langfuse-web.rule=Host(`langfuse.${DOMAIN:?}`)
+      - traefik.http.services.langfuse-web.loadbalancer.server.port=3000
+      - traefik.docker.network=userland_traefik
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:3000/api/public/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 300s
+    mem_limit: ${LANGFUSE_WEB_MEM_LIMIT:-0}
 
-{{ define "langfuse-worker" -}}
-image: langfuse/langfuse-worker:4.41.0
-environment:
-  <<: *userland-environment
-{{ template "langfuse.environment" . }}
-healthcheck:
-  test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:3030/api/health"]
-  interval: 15s
-  timeout: 5s
-  retries: 5
-  start_period: 60s
-{{ end }}
+  langfuse-worker:
+    image: langfuse/langfuse-worker:4.41.0
+    container_name: langfuse-worker
+    restart: unless-stopped
+    depends_on:
+      langfuse-web:
+        condition: service_healthy
+      pgbouncer-transaction:
+        condition: service_healthy
+      langfuse-redis:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+    environment:
+      <<: *langfuse-environment
+    networks:
+      - langfuse
+      - postgres
+      - clickhouse
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:3030/api/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    mem_limit: ${LANGFUSE_WORKER_MEM_LIMIT:-0}
 
-{{ define "langfuse-redis" -}}
-image: redis:7-alpine
-command: ["redis-server", "--requirepass", "${LANGFUSE_REDIS_PASSWORD}", "--maxmemory-policy", "noeviction", "--appendonly", "yes"]
-environment:
-  <<: *userland-environment
-  REDISCLI_AUTH: ${LANGFUSE_REDIS_PASSWORD}
+  langfuse-redis:
+    image: redis:7-alpine
+    container_name: langfuse-redis
+    restart: unless-stopped
+    command: ["redis-server", "--requirepass", "${LANGFUSE_REDIS_PASSWORD:?}", "--maxmemory-policy", "noeviction", "--appendonly", "yes"]
+    environment:
+      REDISCLI_AUTH: ${LANGFUSE_REDIS_PASSWORD:?}
+    networks:
+      - langfuse
+    volumes:
+      - langfuse_redis_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    mem_limit: ${LANGFUSE_REDIS_MEM_LIMIT:-0}
+
+networks:
+  langfuse: {}
+  postgres: {}
+  clickhouse: {}
+  traefik: {}
+
 volumes:
-  - langfuse_redis_data:/data
-healthcheck:
-  test: ["CMD-SHELL", "redis-cli ping | grep -q PONG"]
-  interval: 10s
-  timeout: 5s
-  retries: 5
-{{ end }}
+  langfuse_redis_data: {}

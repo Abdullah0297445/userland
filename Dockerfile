@@ -6,6 +6,6 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /ssmget .
 FROM restic/restic:0.19.1
 RUN apk add --no-cache curl postgresql18-client
 COPY --from=ssm /ssmget /usr/local/bin/ssmget
-COPY scripts/fort-key /usr/local/bin/fort-key
-COPY scripts/fort-entrypoint.sh /fort-entrypoint.sh
-ENTRYPOINT ["/fort-entrypoint.sh"]
+COPY scripts/archivist-key /usr/local/bin/archivist-key
+COPY scripts/archivist-entrypoint.sh /archivist-entrypoint.sh
+ENTRYPOINT ["/archivist-entrypoint.sh"]
