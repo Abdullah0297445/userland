@@ -1,0 +1,61 @@
+#!/bin/sh
+set -eu
+export LC_ALL=C
+
+usage="usage: bin/remove-database NAME"
+
+die() {
+	echo "remove-database: $1" >&2
+	exit 1
+}
+
+[ "$#" -eq 1 ] || die "$usage"
+name=$1
+
+case $name in
+'') die "a name is required. $usage" ;;
+-*) die "$name is not an option. $usage" ;;
+[!a-z]* | *[!a-z0-9_]*) die "'$name' is not a database name. Use a-z, 0-9 and _, and start with a letter." ;;
+postgres | template0 | template1 | pgbouncer_auth | pg_*) die "'$name' belongs to Postgres or its doors." ;;
+esac
+[ "${#name}" -le 63 ] || die "'$name' is longer than 63 characters."
+
+query() {
+	docker exec postgres-18 psql -v ON_ERROR_STOP=1 -X -tA -U postgres -d postgres -c "$1"
+}
+
+query "SELECT 1" >/dev/null 2>&1 ||
+	die "cannot reach postgres-18. Put compose/postgres.yml in COMPOSE_FILE, and run docker compose up -d."
+
+database=$(query "SELECT datname FROM pg_database WHERE datname = '$name'")
+user=$(query "SELECT rolname FROM pg_roles WHERE rolname = '$name'")
+roles=$(query "SELECT string_agg(rolname, ' ' ORDER BY rolname) FROM pg_roles WHERE rolname IN ('${name}_authenticator', '${name}_anon')")
+
+if [ -z "$database$user$roles" ]; then
+	echo "There is no database $name, and no user or role of that name. Nothing was dropped."
+	exit 0
+fi
+
+[ -z "$database" ] || echo "This drops the database $name. Every row in it is lost, and this cannot be undone."
+[ -z "$user" ] || echo "This drops the user $name."
+[ -z "$roles" ] || echo "This drops PostgREST's roles: $(echo "$roles" | sed 's/ /, /g')."
+printf 'Type %s to go ahead: ' "$name"
+answer=
+read -r answer || true
+if [ "$answer" != "$name" ]; then
+	echo "Nothing was dropped."
+	exit 1
+fi
+
+if [ -n "$database" ]; then
+	query "DROP DATABASE \"$name\" WITH (FORCE)" >/dev/null
+	echo "Dropped the database $name."
+fi
+if [ -n "$user" ]; then
+	query "DROP ROLE \"$name\"" >/dev/null
+	echo "Dropped the user $name."
+fi
+for role in $roles; do
+	query "DROP ROLE \"$role\"" >/dev/null
+	echo "Dropped the role $role."
+done

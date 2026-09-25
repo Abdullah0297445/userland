@@ -8,8 +8,8 @@ There is no application code here. userland is the ground your own projects stan
 and it is deliberately not one of them.
 
 > **This repo is being built in the open.** userland now runs on docker compose alone. Every
-> product has its compose file. Nothing yet makes a product's database, the doors' auth user,
-> or a consumer's database: those come next, so a product that needs Postgres does not start
+> product has its compose file, and a consumer's database is made by a helper. Nothing yet makes
+> a product's database: that comes next, so a product that needs Postgres does not start
 > cleanly yet. The design is published as issues on this repo as it is settled.
 
 `userland` is the part of a running system that is not the kernel: everything the machine
@@ -141,13 +141,31 @@ table lists its own.
 
 ## Provisioning
 
-A product that keeps data on Postgres or ClickHouse needs its database and user made before
-it starts. **Nothing makes them yet.** The Go CLI that did is gone, and one-shot setup
-containers will do it next. What each needs:
+**The doors' auth user** is made by [`initdb/door-auth.sh`](initdb/door-auth.sh). Postgres
+runs it at its first start, against an empty volume, and never again. It makes
+`pgbouncer_auth`, the user the doors look passwords up with, and its lookup function,
+`public.pgbouncer_get_auth`, in the `postgres` database.
 
-- On Postgres, the user the doors look passwords up with, `pgbouncer_auth`, and its
-  `SECURITY DEFINER` lookup function, `public.pgbouncer_get_auth`, in the `postgres`
-  database. Its password is `PGBOUNCER_AUTH_PASSWORD`.
+- The function is `SECURITY DEFINER`, so `pgbouncer_auth` needs no right to read the
+  catalog itself. It hands a door the SCRAM verifier Postgres keeps, salt and iteration
+  count included. That is what lets a door pass a client's SCRAM login through to Postgres.
+- `pgbouncer_auth` is no superuser, holds no table rights, and inherits nothing. It reaches no
+  database a product or a consumer owns, since `CONNECT` on each is revoked from everyone else.
+- Its password is `PGBOUNCER_AUTH_PASSWORD`, and Postgres reads it at that first start only.
+  Change it in `.env` later and both doors fail every login, until you set it on Postgres
+  too:
+
+  ```sh
+  docker exec -it postgres-18 psql -U postgres -c '\password pgbouncer_auth'
+  ```
+
+  The doors then recover within 15 seconds, or at once with
+  `docker compose restart pgbouncer-transaction pgbouncer-session`.
+
+**A product's database** and its user must be made before the product starts. **Nothing
+makes them yet.** The Go CLI that did is gone, and one-shot setup containers will do it
+next. What each needs:
+
 - On Postgres, for each of metabase, n8n, langfuse and twenty: a user and a database of that
   name, which the user owns. The password is the product's `_DB_PASSWORD`. `CONNECT` on the
   database is revoked from everyone else, `CREATE` on `public` is revoked, and the `vector`
@@ -308,7 +326,7 @@ button reports the query complete while it runs on.
 | Variable | Needed | Meaning |
 |---|---|---|
 | `POSTGRES_PASSWORD` | required | Password of the Postgres superuser, `postgres`. |
-| `PGBOUNCER_AUTH_PASSWORD` | required | Password of `pgbouncer_auth`, the user the doors look passwords up with. |
+| `PGBOUNCER_AUTH_PASSWORD` | required | Password of `pgbouncer_auth`, the user the doors look passwords up with. Postgres reads it at its first start only, and *Provisioning* says how to change it. |
 | `POSTGRES_18_MEM_LIMIT` | default no limit | Memory limit of `postgres-18`. |
 | `PGBOUNCER_TRANSACTION_MEM_LIMIT` | default no limit | Memory limit of `pgbouncer-transaction`. |
 | `PGBOUNCER_SESSION_MEM_LIMIT` | default no limit | Memory limit of `pgbouncer-session`. |
@@ -917,10 +935,54 @@ A **consumer** is a project of your own that uses userland and is not part of it
     - traefik.docker.network=userland_traefik
   ```
 
-Nothing makes a consumer's database yet. A helper that makes one, with a user of the same name
-that owns it, and prints the DSN once, comes next. Neither ClickHouse nor a Redis is offered to
-a consumer: ClickHouse until a consumer needs one, and Redis never, since a product that needs
-Redis runs its own, and so does a consumer.
+### A consumer's database
+
+Two helpers in `bin/` make and drop a consumer's database on Postgres. They run on the host, from
+the root of the repo, and need only docker and `postgres-18` up.
+
+```sh
+bin/add-database myapp
+bin/add-database --session myapp
+bin/add-database --api myapp
+bin/remove-database myapp
+```
+
+**`bin/add-database NAME`** makes the database `NAME` and a user of the same name that owns it.
+Then it prints the DSN, once.
+
+- `CONNECT` on the database is revoked from everyone else, and so is `CREATE` on `public`.
+- The `vector` extension is installed. It is not a trusted extension, so the consumer's user
+  could not install it later without the superuser. Doing it now costs nothing.
+- The DSN names the transaction door. With `--session`, it names the session door.
+- A name is `a-z`, `0-9` and `_`, starts with a letter, and is at most 63 characters.
+- A name that exists is refused, and nothing is changed. So is a name with a role left from an
+  earlier database: `bin/remove-database NAME` drops it.
+- Postgres keeps no copy of the password you can read back. Paste the DSN into the consumer's
+  own gitignored `.env`.
+
+**`--api`** adds the recipe for [PostgREST](https://postgrest.org), which the consumer runs in
+its own repo. A name is then at most 49 characters, so that `NAME_authenticator` fits in 63.
+
+- A schema `api`, owned by the consumer's user.
+- The authenticator, `NAME_authenticator`: the one role PostgREST logs in as. It holds no table
+  rights, and it is `NOINHERIT`, so it inherits none either. Without `NOINHERIT` it would carry
+  the anon role's rights on every connection, before PostgREST has taken a role.
+- The anon role, `NAME_anon`, which cannot log in and may use `api`. Grant it what it may read.
+- An event trigger that tells PostgREST to reload its schema cache after each migration. Only
+  the superuser may make an event trigger, which is why the helper makes it and not the
+  consumer.
+
+It prints a second DSN, `PGRST_DB_URI`, with `PGRST_DB_SCHEMAS` and `PGRST_DB_ANON_ROLE`.
+`PGRST_DB_URI` names the session door, whichever door the first DSN names. PostgREST hears
+the reload on a `LISTEN`, and the transaction door drops a `LISTEN` without a word.
+
+**`bin/remove-database NAME`** drops the database `NAME`, its user, and PostgREST's two roles,
+whichever of them exist. It names what it will drop, and drops it only if you type the name.
+The drop is `WITH (FORCE)`, because the doors keep pooled connections open to the database.
+Every row in it is lost.
+
+Neither ClickHouse nor a Redis is offered to a consumer: ClickHouse until a consumer needs one,
+and Redis never, since a product that needs Redis runs its own, and so does a consumer.
 
 ## Tests
 
@@ -939,6 +1001,22 @@ compose makes of the files, `docker compose config`, and assert:
 - this README names every variable compose reports;
 - every file in `compose/` is a product the tests know, or `public.yml`.
 
+`test/postgres.bats` starts the real `postgres-18` and both doors, under the compose project
+`userland-test`, and runs the helpers against them. It asserts:
+
+- the doors look passwords up as `pgbouncer_auth`, which is no superuser and inherits nothing;
+- a database added is reached with the printed DSN, through the door it names, as its own user;
+- a database's user reaches no other database, and `vector` is installed;
+- `--api` installs the recipe, and PostgREST's DSN names the session door;
+- adding a name twice, or a name with roles left behind, is refused and changes nothing;
+- a bad name is refused: empty, with a hyphen or a capital, a leading digit, too long, a quote;
+- remove drops nothing unless the name is typed;
+- remove drops the database while both doors hold it, its user and both roles, and the name can be
+  added again.
+
+Its container names are the real ones, so it cannot run on a host where userland is up. There
+its first `up` fails, and the running userland is not touched.
+
 They run from docker, as CI runs them. The repo is mounted at its own path, because a test that
 starts a container hands bind-mount paths to the host's docker:
 
@@ -949,7 +1027,7 @@ docker run --rm --volume /var/run/docker.sock:/var/run/docker.sock --volume "$PW
 ShellCheck reads every script and test, from docker too:
 
 ```sh
-docker run --rm --volume "$PWD":/mnt --workdir /mnt koalaman/shellcheck:stable scripts/* test/*.bats
+docker run --rm --volume "$PWD":/mnt --workdir /mnt koalaman/shellcheck:stable scripts/* bin/* initdb/*.sh test/*.bats
 ```
 
 Both run in CI on every pull request and on every push to `main`
@@ -963,10 +1041,10 @@ Both run in CI on every pull request and on every push to `main`
 | `compose/` | One file per product, and `public.yml`, which turns traefik public. |
 | `test/` | The bats tests. |
 | `scripts/` | Shell that runs inside a container: the archivist's entrypoint, which is its schedule and its backup, and its password command. Nothing here runs on the host. |
-| `bin/` | Helpers that run on the host, in POSIX sh, needing only docker. None yet. |
+| `bin/` | Helpers that run on the host, in POSIX sh, needing only docker: `add-database` and `remove-database`. |
 | `Dockerfile` | The archivist's image, the only one this repo builds: restic, a reader for the secret store, and the Postgres and HTTP clients its backup needs. |
 | `ssmget/` | That reader, a small Go module of its own. |
-| `initdb/` | First-start initialisation for Postgres. Runs once, against an empty volume, and never again. Empty today. |
+| `initdb/` | First-start initialisation for Postgres. Runs once, against an empty volume, and never again. `door-auth.sh` makes the doors' auth user. |
 | `config/` | Configuration files a container mounts, checked in because they hold nothing secret. pgadmin's one server is the first. |
 | `docs/adr/` | Decisions that are hard to reverse, and why they were made. |
 

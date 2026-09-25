@@ -1,0 +1,134 @@
+#!/bin/sh
+set -eu
+export LC_ALL=C
+
+usage="usage: bin/add-database [--session] [--api] NAME"
+
+die() {
+	echo "add-database: $1" >&2
+	exit 1
+}
+
+session=
+api=
+name=
+count=0
+for argument in "$@"; do
+	case $argument in
+	--session) session=1 ;;
+	--api) api=1 ;;
+	-*) die "$argument is not an option. $usage" ;;
+	*)
+		name=$argument
+		count=$((count + 1))
+		;;
+	esac
+done
+[ "$count" -eq 1 ] || die "$usage"
+
+case $name in
+'') die "a name is required. $usage" ;;
+[!a-z]* | *[!a-z0-9_]*) die "'$name' is not a database name. Use a-z, 0-9 and _, and start with a letter." ;;
+postgres | template0 | template1 | pgbouncer_auth | pg_*) die "'$name' belongs to Postgres or its doors." ;;
+esac
+[ "${#name}" -le 63 ] || die "'$name' is longer than 63 characters."
+
+authenticator=${name}_authenticator
+anon=${name}_anon
+if [ -n "$api" ] && [ "${#authenticator}" -gt 63 ]; then
+	die "'$name' is too long for --api: the user $authenticator would be longer than 63 characters."
+fi
+
+run() {
+	docker exec -i postgres-18 psql -v ON_ERROR_STOP=1 -X --quiet -U postgres -d "$1"
+}
+
+query() {
+	docker exec postgres-18 psql -v ON_ERROR_STOP=1 -X -tA -U postgres -d postgres -c "$1"
+}
+
+query "SELECT 1" >/dev/null 2>&1 ||
+	die "cannot reach postgres-18. Put compose/postgres.yml in COMPOSE_FILE, and run docker compose up -d."
+
+database=$(query "SELECT 1 FROM pg_database WHERE datname = '$name'")
+[ -z "$database" ] || die "the database $name already exists. Nothing was changed."
+left=$(query "SELECT string_agg(rolname, ', ' ORDER BY rolname) FROM pg_roles WHERE rolname IN ('$name', '$authenticator', '$anon')")
+[ -z "$left" ] || die "there is no database $name, but these remain from an earlier one: $left. Nothing was changed. bin/remove-database $name drops them."
+
+new_password() {
+	od -An -tx1 -N16 /dev/urandom | tr -d ' \n'
+}
+
+password=$(new_password)
+[ "${#password}" -eq 32 ] || die "could not read 16 bytes from /dev/urandom."
+
+run postgres <<SQL
+CREATE ROLE "$name" LOGIN PASSWORD '$password';
+CREATE DATABASE "$name" OWNER "$name";
+BEGIN;
+REVOKE CONNECT ON DATABASE "$name" FROM PUBLIC;
+GRANT CONNECT ON DATABASE "$name" TO "$name";
+COMMIT;
+SQL
+
+run "$name" <<'SQL'
+BEGIN;
+REVOKE CREATE ON SCHEMA public FROM PUBLIC;
+CREATE EXTENSION IF NOT EXISTS vector;
+COMMIT;
+SQL
+
+if [ -n "$api" ]; then
+	api_password=$(new_password)
+	[ "${#api_password}" -eq 32 ] || die "could not read 16 bytes from /dev/urandom."
+	run "$name" <<SQL
+BEGIN;
+CREATE SCHEMA api AUTHORIZATION "$name";
+CREATE ROLE "$authenticator" LOGIN NOINHERIT NOCREATEDB NOCREATEROLE NOSUPERUSER PASSWORD '$api_password';
+CREATE ROLE "$anon" NOLOGIN;
+GRANT "$anon" TO "$authenticator";
+GRANT CONNECT ON DATABASE "$name" TO "$authenticator";
+GRANT USAGE ON SCHEMA api TO "$anon";
+CREATE FUNCTION public.pgrst_watch() RETURNS event_trigger
+  LANGUAGE plpgsql AS \$\$
+BEGIN
+  NOTIFY pgrst, 'reload schema';
+END;
+\$\$;
+CREATE EVENT TRIGGER pgrst_watch ON ddl_command_end EXECUTE FUNCTION public.pgrst_watch();
+COMMIT;
+SQL
+fi
+
+if [ -n "$session" ]; then
+	door=pgbouncer-session
+	door_name="session door"
+else
+	door=pgbouncer-transaction
+	door_name="transaction door"
+fi
+
+echo "The database $name is made, and the user $name owns it."
+echo "Each password is shown here once. Postgres keeps no copy you can read back."
+echo
+echo "For the consumer, through the $door_name:"
+echo
+echo "  DATABASE_URL=postgresql://$name:$password@$door:5432/$name"
+if [ -n "$session" ]; then
+	echo
+	echo "The session door holds one Postgres connection for as long as the consumer holds its own."
+	echo "So the consumer must release its connections promptly."
+fi
+if [ -n "$api" ]; then
+	echo
+	echo "For PostgREST, through the session door:"
+	echo
+	echo "  PGRST_DB_URI=postgresql://$authenticator:$api_password@pgbouncer-session:5432/$name"
+	echo "  PGRST_DB_SCHEMAS=api"
+	echo "  PGRST_DB_ANON_ROLE=$anon"
+	echo
+	echo "PGRST_DB_URI names the session door, whichever door DATABASE_URL names."
+	echo "PostgREST hears a schema reload on a LISTEN, and the transaction door drops it without a word."
+fi
+echo
+echo "To reach a door, the consumer's compose file declares the network userland_postgres external, and joins it."
