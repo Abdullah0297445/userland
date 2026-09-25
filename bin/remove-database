@@ -2,23 +2,82 @@
 set -eu
 export LC_ALL=C
 
-usage="usage: bin/remove-database NAME"
+usage="usage: bin/remove-database NAME, or bin/remove-database --clickhouse NAME"
 
 die() {
 	echo "remove-database: $1" >&2
 	exit 1
 }
 
-[ "$#" -eq 1 ] || die "$usage"
-name=$1
+clickhouse=
+name=
+count=0
+for argument in "$@"; do
+	case $argument in
+	--clickhouse) clickhouse=1 ;;
+	-*) die "$argument is not an option. $usage" ;;
+	*)
+		name=$argument
+		count=$((count + 1))
+		;;
+	esac
+done
+[ "$count" -eq 1 ] || die "$usage"
 
 case $name in
 '') die "a name is required. $usage" ;;
--*) die "$name is not an option. $usage" ;;
 [!a-z]* | *[!a-z0-9_]*) die "'$name' is not a database name. Use a-z, 0-9 and _, and start with a letter." ;;
-postgres | template0 | template1 | pgbouncer_auth | pg_*) die "'$name' belongs to Postgres or its doors." ;;
 esac
 [ "${#name}" -le 63 ] || die "'$name' is longer than 63 characters."
+
+confirm() {
+	printf 'Type %s to go ahead: ' "$name"
+	answer=
+	read -r answer || true
+	if [ "$answer" != "$name" ]; then
+		echo "Nothing was dropped."
+		exit 1
+	fi
+}
+
+if [ -n "$clickhouse" ]; then
+	case $name in
+	default | system | information_schema) die "'$name' belongs to ClickHouse." ;;
+	esac
+
+	clickhouse_query() {
+		docker exec clickhouse clickhouse-client --query "$1"
+	}
+
+	clickhouse_query "SELECT 1" >/dev/null 2>&1 ||
+		die "cannot reach clickhouse. Put compose/clickhouse.yml in COMPOSE_FILE, and run docker compose up -d."
+
+	database=$(clickhouse_query "SELECT count() FROM system.databases WHERE name = '$name'")
+	user=$(clickhouse_query "SELECT count() FROM system.users WHERE name = '$name'")
+
+	if [ "$database$user" = 00 ]; then
+		echo "There is no database $name on ClickHouse, and no user of that name. Nothing was dropped."
+		exit 0
+	fi
+
+	[ "$database" = 0 ] || echo "This drops the database $name on ClickHouse. Every row in it is lost, and this cannot be undone."
+	[ "$user" = 0 ] || echo "This drops the user $name on ClickHouse."
+	confirm
+
+	if [ "$database" != 0 ]; then
+		clickhouse_query "DROP DATABASE \"$name\" SYNC"
+		echo "Dropped the database $name on ClickHouse."
+	fi
+	if [ "$user" != 0 ]; then
+		clickhouse_query "DROP USER \"$name\""
+		echo "Dropped the user $name on ClickHouse."
+	fi
+	exit 0
+fi
+
+case $name in
+postgres | template0 | template1 | pgbouncer_auth | pg_*) die "'$name' belongs to Postgres or its doors." ;;
+esac
 
 query() {
 	docker exec postgres-18 psql -v ON_ERROR_STOP=1 -X -tA -U postgres -d postgres -c "$1"
@@ -39,13 +98,7 @@ fi
 [ -z "$database" ] || echo "This drops the database $name. Every row in it is lost, and this cannot be undone."
 [ -z "$user" ] || echo "This drops the user $name."
 [ -z "$roles" ] || echo "This drops PostgREST's roles: $(echo "$roles" | sed 's/ /, /g')."
-printf 'Type %s to go ahead: ' "$name"
-answer=
-read -r answer || true
-if [ "$answer" != "$name" ]; then
-	echo "Nothing was dropped."
-	exit 1
-fi
+confirm
 
 if [ -n "$database" ]; then
 	query "DROP DATABASE \"$name\" WITH (FORCE)" >/dev/null
