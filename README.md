@@ -9,8 +9,9 @@ and it is deliberately not one of them.
 
 > **This repo is being built in the open.** userland now runs on docker compose alone. Every
 > product has its compose file, every database is made by a helper, and every database is
-> archived and taken off the host. Every `.env` living in Infisical comes next. The design is
-> published as issues on this repo as it is settled.
+> archived and taken off the host. Every `.env` living in Infisical comes next, and *Bringing a
+> host back* already says how a new host will come back with it. The design is published as
+> issues on this repo as it is settled.
 
 `userland` is the part of a running system that is not the kernel: everything the machine
 runs *for you*. This repo is that layer, for one host.
@@ -159,7 +160,7 @@ table lists its own.
 **A database is made by hand, once**, before the product or consumer that uses it first
 starts. A product's database is made the same way as a consumer's. Nothing makes one on its
 own, and nothing changes one afterwards: a new password is given by hand too. On a new host,
-the databases come back from the archive, under *The archivist*, so none is made there.
+the databases come back from the archive, under *Bringing a host back*, so none is made there.
 
 Three helpers in `bin/` do it. They run on the host, from the root of the repo. They need only
 docker, and `postgres-18` or `clickhouse` up.
@@ -372,6 +373,11 @@ Make these, in this order:
 ```
 
 The key may only read that one parameter, and nothing it holds writes.
+
+The secret store holds master keys and nothing else. Infisical's master key will be the second,
+read by an access key of its own, so neither the archivist nor Infisical can read the other's.
+The keys that reach the secret store are recovery keys, and you keep them yourself, under
+*Bringing a host back*.
 
 ## traefik
 
@@ -1048,7 +1054,7 @@ bin/restore --postgres shop --snapshot 1a2b3c4d
   snapshot list above shows each one's ID.
 
 The globals go back only into a datastore being rebuilt, and `bin/restore` never puts them
-back. Bringing a whole host back is not written yet.
+back. `bin/rebuild` does, under *Bringing a host back*.
 
 | Variable | Needed | Meaning |
 |---|---|---|
@@ -1063,6 +1069,89 @@ back. Bringing a whole host back is not written yet.
 | `ARCHIVIST_KEY_ACCESS_KEY_ID` | required | Access key that may read this one parameter and nothing else. |
 | `ARCHIVIST_KEY_SECRET_ACCESS_KEY` | required | Its secret. |
 | `ARCHIVIST_MEM_LIMIT` | default no limit | Memory limit of `archivist`. |
+
+## Bringing a host back
+
+When a host is lost, a new one comes back from the bucket and your recovery keys alone. Every
+database comes back from the archive, with every user and its old password. Every `.env` comes
+back from Infisical, whose own database is one of those databases.
+
+> Infisical is not part of userland yet. Steps 4, 5 and 8 below arrive with it, and one helper
+> will then do steps 2 to 8 in one command. Until Infisical lands, keep a copy of `.env` off
+> the host as well.
+
+**The recovery keys.** Infisical keeps every secret but two kinds. The master keys live in the
+secret store. The recovery keys are every secret the host needs before Infisical is running,
+because Infisical comes back only after Postgres does. You keep them off the host, wherever you
+keep secrets, with the settings that go with them. Infisical keeps a copy too, so the `.env` it
+writes is whole. When you change one, change your copy as well.
+
+| What | Lines |
+|---|---|
+| The archivist's bucket, and the access key that reaches it | `ARCHIVIST_S3_BUCKET`, `ARCHIVIST_S3_REGION`, `ARCHIVIST_S3_ENDPOINT`, `ARCHIVIST_S3_ACCESS_KEY_ID`, `ARCHIVIST_S3_SECRET_ACCESS_KEY` |
+| The archivist's master key, and the access key that reads it | `ARCHIVIST_KEY_PROVIDER`, `ARCHIVIST_KEY_NAME`, `ARCHIVIST_KEY_REGION`, `ARCHIVIST_KEY_ACCESS_KEY_ID`, `ARCHIVIST_KEY_SECRET_ACCESS_KEY` |
+| The passwords of the Postgres superuser and of `pgbouncer_auth` | `POSTGRES_PASSWORD`, `PGBOUNCER_AUTH_PASSWORD` |
+| Infisical's master key and the access key that reads it, its database password, its Redis password, its auth secret, and the helper's login to Infisical | Their lines arrive with Infisical. |
+
+Every other password comes back with the globals, and every other line comes from Infisical.
+
+**The order.**
+
+1. Clone userland, and write the first `.env`: the recovery keys, and
+
+   ```sh
+   COMPOSE_FILE=compose.yml:compose/postgres.yml:compose/archivist.yml
+   ```
+
+2. `docker compose up -d`. Postgres starts empty, with its old passwords. The archivist finds
+   the repository already in the bucket. **Never run `archivist init` here.**
+3. Straight away, `bin/rebuild --postgres`. Every user and every database comes back,
+   Infisical's included.
+4. Add `compose/infisical.yml` to `COMPOSE_FILE`, with `DOMAIN`, `SCHEME` and
+   `SECURE_COOKIES`, and run `docker compose up -d`. Infisical starts on its old database, and
+   reads its master key from the secret store.
+5. Write `.env` from Infisical. It now holds every line, and the whole `COMPOSE_FILE`.
+6. If ClickHouse is in `COMPOSE_FILE`, run `docker compose up -d clickhouse clickhouse-dumper`,
+   then `bin/rebuild --clickhouse`. Naming the two containers starts them alone, so no product
+   meets an empty ClickHouse.
+7. `docker compose up -d --remove-orphans`. Every product starts on data that is already back.
+8. Write each consumer's `.env` from Infisical, and start the consumer.
+
+No product starts before its data is back. Infisical waits for step 4, so it never meets a
+Postgres without its database.
+
+**`bin/rebuild`** puts a whole datastore back from one **run**: one pass of a dumper, named by
+the time it started, as its folder in the backup folder is.
+
+```sh
+bin/rebuild --postgres
+bin/rebuild --clickhouse
+bin/rebuild --postgres --run 20260925T000000Z
+```
+
+- `--postgres` or `--clickhouse` is required: one of them, always.
+- It takes the newest run, and says which before it starts. The globals go back first, then
+  every database in that run. Every archive comes from the one run, so every database comes
+  back from the same moment, even if a dumper runs meanwhile.
+- **Run it straight after the datastore starts.** A dumper starts with its datastore, and its
+  first run waits for the next slot. A run before the rebuild archives an empty datastore, and
+  becomes the newest. So `bin/rebuild` refuses a newest run with no database in it, and lists
+  the runs there are. `--run` names the one to take, and this lists every archive with its
+  run: `docker exec archivist archivist runs postgres`.
+- It refuses a datastore that is not empty, and changes nothing. Empty on Postgres is no
+  database and no user but its own. On ClickHouse it is no database but its own, no table in
+  `default`, and no user but `default`. So a rebuild can never reset the users of a live
+  datastore. `bin/restore` brings one database back.
+- The globals come back whole: every user with its old password, and on ClickHouse with its
+  grants. ClickHouse's `default` is not among them, because it comes from `CLICKHOUSE_PASSWORD`
+  at every start.
+- Postgres makes its superuser and `pgbouncer_auth` at its first start, from `.env`. The
+  globals then give them the passwords in the archive, so both lines must be the recovery keys.
+  If either is not, the rebuild stops right after the globals, before any database, and says
+  so.
+- A rebuild that fails part way says how to start again on an empty datastore:
+  `docker compose down`, then `docker volume rm` of the datastore's volume,
+  `userland_postgres_data` or `userland_clickhouse_data`.
 
 ## For a consumer
 
@@ -1177,6 +1266,20 @@ and asserts, on Postgres and on ClickHouse:
 - an older archive is picked by its snapshot;
 - a database whose user is gone is refused, and nothing is changed.
 
+`test/rebuild.bats` starts the same containers. It stands in for a new host by removing a
+datastore's volume and starting it again, empty, while the bucket stays. It asserts:
+
+- rebuild names its datastore, one of the two;
+- on a new host, Postgres comes back whole: every database with its rows, and every user with
+  its old password, through the door;
+- on a new host, ClickHouse comes back whole: every user with its password and grants, and every
+  database, `default`'s tables included;
+- a Postgres or a ClickHouse that is not empty is refused, and nothing is changed;
+- the newest run is taken, a newest run with no database is refused, and `--run` takes an older
+  one;
+- a password in `.env` that is not the archive's stops the rebuild right after the globals, and
+  says so.
+
 Their container names are the real ones, so they cannot run on a host where userland is up.
 There their first `up` fails, and the running userland is not touched.
 
@@ -1204,7 +1307,7 @@ Both run in CI on every pull request and on every push to `main`
 | `compose/` | One file per product, and `public.yml`, which turns traefik public. |
 | `test/` | The bats tests. |
 | `scripts/` | Shell that runs inside a container: the archivist's loop and commands, its password command, and the dumper both datastores run. Nothing here runs on the host. |
-| `bin/` | Helpers that run on the host, in POSIX sh, needing only docker: `add-database`, `new-password`, `remove-database` and `restore`. |
+| `bin/` | Helpers that run on the host, in POSIX sh, needing only docker: `add-database`, `new-password`, `remove-database`, `restore` and `rebuild`. |
 | `Dockerfile` | The archivist's image, the only one this repo builds: restic, and a reader for the secret store. |
 | `ssmget/` | That reader, a small Go module of its own. |
 | `initdb/` | First-start initialisation for Postgres. Runs once, against an empty volume, and never again. `door-auth.sh` makes the doors' auth user. |
@@ -1254,9 +1357,10 @@ the table names every one.
   published without redaction. Never write a real domain, bucket name, host address, email
   or account identifier into a tracked file.
 - **That one `.env` holds every secret of every product you switched on.** Confirm
-  `.gitignore` excludes it before your first commit, and keep a copy somewhere off this
-  machine. Some of what it holds, the encryption keys a product writes data with, cannot be
-  regenerated, and losing them loses the data.
+  `.gitignore` excludes it before your first commit. Its real copy is to live in Infisical,
+  and until Infisical lands, keep a copy somewhere off this machine. Some of what it holds, the
+  encryption keys a product writes data with, cannot be regenerated, and losing them loses the
+  data.
 - **Postgres and the doors run at their images' defaults.** No pool size, connection
   ceiling or memory setting is written anywhere in this repo, beyond the two doors'
   client ceiling and the session door's pool, which is Postgres's own connection limit so

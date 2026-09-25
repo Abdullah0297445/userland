@@ -93,6 +93,18 @@ fetch() {
 	say "wrote $path into $target"
 }
 
+runs() {
+	if [ $# -ne 1 ]; then
+		complain "usage: archivist runs DATASTORE"
+		exit 2
+	fi
+	snapshots=$(restic snapshots --json --tag "$1")
+	echo "$snapshots" |
+		sed 's/},{"time":/}\n{"time":/g' |
+		sed -n 's/^.*{"time":"\([0-9]*\)-\([0-9]*\)-\([0-9]*\)T\([0-9]*\):\([0-9]*\):\([0-9]*\)Z".*"paths":\["\([^"]*\)"\].*"short_id":"\([0-9a-f]*\)".*$/\1\2\3T\4\5\6Z \8 \7/p' |
+		sort
+}
+
 health() {
 	[ -f "$state" ] || exit 0
 	if [ "$(cat "$state")" != ok ]; then
@@ -116,6 +128,10 @@ upload) upload ;;
 fetch)
 	shift
 	fetch "$@"
+	;;
+runs)
+	shift
+	runs "$@"
 	;;
 health) health ;;
 *) exec restic "$@" ;;
