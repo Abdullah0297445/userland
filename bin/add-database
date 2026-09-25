@@ -2,7 +2,7 @@
 set -eu
 export LC_ALL=C
 
-usage="usage: bin/add-database [--session] [--api] NAME"
+usage="usage: bin/add-database [--session] [--api] NAME, or bin/add-database --clickhouse NAME"
 
 die() {
 	echo "add-database: $1" >&2
@@ -11,12 +11,14 @@ die() {
 
 session=
 api=
+clickhouse=
 name=
 count=0
 for argument in "$@"; do
 	case $argument in
 	--session) session=1 ;;
 	--api) api=1 ;;
+	--clickhouse) clickhouse=1 ;;
 	-*) die "$argument is not an option. $usage" ;;
 	*)
 		name=$argument
@@ -29,9 +31,68 @@ done
 case $name in
 '') die "a name is required. $usage" ;;
 [!a-z]* | *[!a-z0-9_]*) die "'$name' is not a database name. Use a-z, 0-9 and _, and start with a letter." ;;
-postgres | template0 | template1 | pgbouncer_auth | pg_*) die "'$name' belongs to Postgres or its doors." ;;
 esac
 [ "${#name}" -le 63 ] || die "'$name' is longer than 63 characters."
+
+new_password() {
+	od -An -tx1 -N16 /dev/urandom | tr -d ' \n'
+}
+
+if [ -n "$clickhouse" ]; then
+	[ -z "$session$api" ] || die "--session and --api are for Postgres, and --clickhouse takes neither. $usage"
+	case $name in
+	default | system | information_schema) die "'$name' belongs to ClickHouse." ;;
+	esac
+
+	clickhouse_query() {
+		docker exec clickhouse clickhouse-client --query "$1"
+	}
+
+	clickhouse_query "SELECT 1" >/dev/null 2>&1 ||
+		die "cannot reach clickhouse. Put compose/clickhouse.yml in COMPOSE_FILE, and run docker compose up -d."
+
+	[ "$(clickhouse_query "SELECT count() FROM system.databases WHERE name = '$name'")" = 0 ] ||
+		die "the database $name already exists on ClickHouse. Nothing was changed."
+	[ "$(clickhouse_query "SELECT count() FROM system.users WHERE name = '$name'")" = 0 ] ||
+		die "there is no database $name on ClickHouse, but its user remains from an earlier one. Nothing was changed. bin/remove-database --clickhouse $name drops it."
+
+	password=$(new_password)
+	[ "${#password}" -eq 32 ] || die "could not read 16 bytes from /dev/urandom."
+
+	docker exec -i clickhouse clickhouse-client --multiquery <<SQL
+CREATE DATABASE "$name";
+CREATE USER "$name" IDENTIFIED BY '$password';
+GRANT SELECT, INSERT ON "$name".* TO "$name";
+GRANT ALTER UPDATE, ALTER DELETE ON "$name".* TO "$name";
+GRANT CREATE, DROP TABLE, DROP VIEW ON "$name".* TO "$name";
+GRANT ALTER ADD COLUMN, ALTER MODIFY COLUMN, ALTER VIEW MODIFY QUERY ON "$name".* TO "$name";
+GRANT ALTER ADD INDEX, ALTER DROP INDEX, ALTER MATERIALIZE INDEX ON "$name".* TO "$name";
+GRANT SYSTEM SYNC REPLICA, SYSTEM MERGES, ALTER SETTINGS ON "$name".* TO "$name";
+GRANT SELECT(database, table, name, partition, partition_id, active, rows) ON system.parts TO "$name";
+GRANT SELECT(database, table, is_done) ON system.mutations TO "$name";
+GRANT SELECT(database, name, engine) ON system.tables TO "$name";
+GRANT SELECT ON system.processes TO "$name";
+GRANT SELECT ON system.query_log* TO "$name";
+SQL
+
+	echo "The database $name is made on ClickHouse, and the user $name owns it."
+	echo "The password is shown here once. ClickHouse keeps no copy you can read back."
+	echo
+	echo "For a consumer:"
+	echo
+	echo "  CLICKHOUSE_URL=clickhouse://$name:$password@clickhouse:9000/$name"
+	echo
+	echo "For a product, in userland's .env:"
+	echo
+	echo "  $(echo "$name" | tr '[:lower:]' '[:upper:]')_CLICKHOUSE_PASSWORD=$password"
+	echo
+	echo "To reach ClickHouse, the consumer's compose file declares the network userland_clickhouse external, and joins it."
+	exit 0
+fi
+
+case $name in
+postgres | template0 | template1 | pgbouncer_auth | pg_*) die "'$name' belongs to Postgres or its doors." ;;
+esac
 
 authenticator=${name}_authenticator
 anon=${name}_anon
@@ -54,10 +115,6 @@ database=$(query "SELECT 1 FROM pg_database WHERE datname = '$name'")
 [ -z "$database" ] || die "the database $name already exists. Nothing was changed."
 left=$(query "SELECT string_agg(rolname, ', ' ORDER BY rolname) FROM pg_roles WHERE rolname IN ('$name', '$authenticator', '$anon')")
 [ -z "$left" ] || die "there is no database $name, but these remain from an earlier one: $left. Nothing was changed. bin/remove-database $name drops them."
-
-new_password() {
-	od -An -tx1 -N16 /dev/urandom | tr -d ' \n'
-}
 
 password=$(new_password)
 [ "${#password}" -eq 32 ] || die "could not read 16 bytes from /dev/urandom."
@@ -111,9 +168,13 @@ fi
 echo "The database $name is made, and the user $name owns it."
 echo "Each password is shown here once. Postgres keeps no copy you can read back."
 echo
-echo "For the consumer, through the $door_name:"
+echo "For a consumer, through the $door_name:"
 echo
 echo "  DATABASE_URL=postgresql://$name:$password@$door:5432/$name"
+echo
+echo "For a product, in userland's .env:"
+echo
+echo "  $(echo "$name" | tr '[:lower:]' '[:upper:]')_DB_PASSWORD=$password"
 if [ -n "$session" ]; then
 	echo
 	echo "The session door holds one Postgres connection for as long as the consumer holds its own."

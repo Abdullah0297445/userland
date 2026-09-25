@@ -74,14 +74,14 @@ _Avoid_: mode, environment, stage, dev/prod, exposure
 
 **Consumer**:
 A project of your own that uses userland and is not part of it. It may have a database on
-Postgres and it may sit behind traefik; userland never runs it.
+Postgres or ClickHouse, and it may sit behind traefik; userland never runs it.
 _Avoid_: tenant, client, app, application
 
 **Provisioning**:
-Making the users and databases a product needs exist before it runs. What userland's own
-products need converges on their settings; what a consumer was given is never changed once it
-exists. A consumer is provisioned by hand, with a helper.
-_Avoid_: seeding, bootstrapping, init, setup, migration
+Making the user and database a product or a consumer needs, before it first runs. It is done
+once, by hand, with a helper, and the same way for both. Nothing changes a database or its
+user on its own afterwards: a new password is given by hand too.
+_Avoid_: seeding, bootstrapping, init, setup, migration, converging
 
 **Helper**:
 A small POSIX sh script you run on the host, to do what compose can't. It needs only docker.
@@ -96,8 +96,8 @@ _Avoid_: identity, IAM user, credentials, service account, token
 ## Postgres and ClickHouse
 
 **Database**:
-One database on Postgres or ClickHouse, made by provisioning for one product, or on
-Postgres for one consumer, and owned by a user of the same name. Every container that
+One database on Postgres or ClickHouse, made by provisioning for one product or one
+consumer, and owned by a user of the same name. Every container that
 connects as that user shares it. A database that serves customers of its own is still one
 database. Nothing on Redis is a database in this sense: a product that needs Redis runs its
 own, inside the product, and nothing else is ever pointed at it.
@@ -130,8 +130,8 @@ connection for as long as the container holds its own, so a container on this do
 release promptly.
 
 **DSN**:
-The connection string userland hands a consumer, or writes for a container. It names a
-door.
+The connection string userland hands a consumer, or writes for a container. On Postgres,
+it names a door.
 _Avoid_: connection URL, database URL, credentials
 
 **Archive**:

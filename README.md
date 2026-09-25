@@ -91,23 +91,37 @@ git clone https://github.com/Abdullah0297445/userland
 cd userland
 ```
 
-Write `.env` at the root. It names the products and holds what they read, for example:
+Write `.env` at the root. It names the products and holds what they read. Start with
+Postgres:
 
 ```sh
-COMPOSE_FILE=compose.yml:compose/postgres.yml:compose/metabase.yml
+COMPOSE_FILE=compose.yml:compose/postgres.yml
 DOMAIN=localhost
 SCHEME=http
 SECURE_COOKIES=false
 POSTGRES_PASSWORD=...
 PGBOUNCER_AUTH_PASSWORD=...
-METABASE_DB_PASSWORD=...
-MB_ENCRYPTION_SECRET_KEY=...
 ```
 
 Then bring it up:
 
 ```sh
 docker compose up -d --remove-orphans
+```
+
+A product with a database needs it made first, under *Provisioning*. For metabase:
+
+```sh
+bin/add-database metabase
+```
+
+It prints `METABASE_DB_PASSWORD=...`. Paste that line into `.env`, add metabase to
+`COMPOSE_FILE` with the rest of what it reads, and run the same `up` again:
+
+```sh
+COMPOSE_FILE=compose.yml:compose/postgres.yml:compose/metabase.yml
+METABASE_DB_PASSWORD=...
+MB_ENCRYPTION_SECRET_KEY=...
 ```
 
 - **`compose.yml` always comes first.** Compose reads every relative path, such as
@@ -121,7 +135,8 @@ docker compose up -d --remove-orphans
   means.
 - **To switch a product off**, take it out of `COMPOSE_FILE` and run the same command.
   `--remove-orphans` removes its containers. Its volumes stay, and so does its database. To
-  drop a volume too, `docker volume rm` it by hand.
+  drop a volume too, `docker volume rm` it by hand. To drop its database,
+  `bin/remove-database` it, under *Provisioning*.
 - **`docker compose down`** stops everything and keeps every volume. The next `up` brings it
   back.
 
@@ -141,10 +156,115 @@ table lists its own.
 
 ## Provisioning
 
-**The doors' auth user** is made by [`initdb/door-auth.sh`](initdb/door-auth.sh). Postgres
-runs it at its first start, against an empty volume, and never again. It makes
-`pgbouncer_auth`, the user the doors look passwords up with, and its lookup function,
-`public.pgbouncer_get_auth`, in the `postgres` database.
+**A database is made by hand, once**, before the product or consumer that uses it first
+starts. A product's database is made the same way as a consumer's. Nothing makes one on its
+own, and nothing changes one afterwards: a new password is given by hand too. On a new host,
+the databases come back from the archive, under *The archivist*, so none is made there.
+
+Three helpers in `bin/` do it. They run on the host, from the root of the repo. They need only
+docker, and `postgres-18` or `clickhouse` up.
+
+```sh
+bin/add-database myapp
+bin/add-database --session myapp
+bin/add-database --api myapp
+bin/add-database --clickhouse myapp
+bin/new-password myapp
+bin/remove-database myapp
+```
+
+**Before a product with a database first starts**, make its database, and paste the line the
+helper prints into `.env`. Compose refuses a product whose variable is missing, so the product
+goes into `COMPOSE_FILE` after its database is made.
+
+| Product | Run | Paste |
+|---|---|---|
+| metabase | `bin/add-database metabase` | `METABASE_DB_PASSWORD` |
+| n8n | `bin/add-database n8n`, then the one line under *n8n* | `N8N_DB_PASSWORD` |
+| langfuse | `bin/add-database langfuse` and `bin/add-database --clickhouse langfuse` | `LANGFUSE_DB_PASSWORD` and `LANGFUSE_CLICKHOUSE_PASSWORD` |
+| twenty | `bin/add-database twenty` | `TWENTY_DB_PASSWORD` |
+
+### Making a database
+
+**`bin/add-database NAME`** makes the database `NAME` on Postgres, and a user of the same name
+that owns it. It prints two lines, once: a DSN for a consumer, and `NAME_DB_PASSWORD` for a
+product, in capitals.
+
+- `CONNECT` on the database is revoked from everyone else, and so is `CREATE` on `public`.
+- The `vector` extension is installed. It is not a trusted extension, so the database's user
+  could not install it later without the superuser. Doing it now costs nothing.
+- The DSN names the transaction door. With `--session`, it names the session door.
+- A name is `a-z`, `0-9` and `_`, starts with a letter, and is at most 63 characters.
+- A name that exists is refused, and nothing is changed. So is a name with a role left from an
+  earlier database: `bin/remove-database NAME` drops it. So a consumer can never take a
+  product's name once the product has it, nor a product a consumer's.
+- Postgres keeps no copy of the password you can read back. A consumer's DSN goes into the
+  consumer's own gitignored `.env`.
+
+**`--api`** adds the recipe for [PostgREST](https://postgrest.org), which a consumer runs in
+its own repo. A name is then at most 49 characters, so that `NAME_authenticator` fits in 63.
+
+- A schema `api`, owned by the database's user.
+- The authenticator, `NAME_authenticator`: the one role PostgREST logs in as. It holds no table
+  rights, and it is `NOINHERIT`, so it inherits none either. Without `NOINHERIT` it would carry
+  the anon role's rights on every connection, before PostgREST has taken a role.
+- The anon role, `NAME_anon`, which cannot log in and may use `api`. Grant it what it may read.
+- An event trigger that tells PostgREST to reload its schema cache after each migration. Only
+  the superuser may make an event trigger, which is why the helper makes it and not the
+  consumer.
+
+It also prints `PGRST_DB_URI`, a DSN for PostgREST, with `PGRST_DB_SCHEMAS` and
+`PGRST_DB_ANON_ROLE`.
+`PGRST_DB_URI` names the session door, whichever door the first DSN names. PostgREST hears
+the reload on a `LISTEN`, and the transaction door drops a `LISTEN` without a word.
+
+**`--clickhouse`** makes the database `NAME` on ClickHouse instead, and a user of the same name
+with the grants under *ClickHouse*. It prints a DSN,
+`CLICKHOUSE_URL=clickhouse://NAME:...@clickhouse:9000/NAME`, and `NAME_CLICKHOUSE_PASSWORD`.
+It takes neither `--session` nor `--api`. `default`, `system` and `information_schema` belong
+to ClickHouse and are refused.
+
+### A new password
+
+**`bin/new-password NAME`** gives one user a new random password, and prints the lines to
+paste, as `bin/add-database` does. Then run `docker compose up -d`: compose restarts every
+container whose line changed.
+
+- `NAME` is a database's user, PostgREST's authenticator `NAME_authenticator`, or
+  `pgbouncer_auth`. With `--clickhouse`, it is a database's user on ClickHouse. With
+  `--session`, the DSN names the session door.
+- The old password stops working at once. A product fails its logins until `up` restarts it
+  with the new line.
+- For `pgbouncer_auth`, the line is `PGBOUNCER_AUTH_PASSWORD`. Until `up` recreates both doors,
+  they may refuse new logins. `postgres-18` is recreated too, because it holds the same line.
+- **The superusers are changed by hand.** For Postgres, set the new password on Postgres, then
+  change `POSTGRES_PASSWORD` in `.env` and run `up`. pgadmin keeps its own saved copy, so
+  change it there too:
+
+  ```sh
+  docker exec -it postgres-18 psql -U postgres -c '\password postgres'
+  ```
+
+  For ClickHouse, change `CLICKHOUSE_PASSWORD` in `.env` and run `up`. ClickHouse reads it at
+  every start.
+
+### Dropping a database
+
+**`bin/remove-database NAME`** drops the database `NAME`, its user, and PostgREST's two roles,
+whichever of them exist. With `--clickhouse`, it drops the database and its user on
+ClickHouse. It names what it will drop, and drops it only if you type the name. Every row in it
+is lost. A product's database is dropped the same way, once the product is switched off.
+
+- On Postgres the drop is `WITH (FORCE)`, because the doors keep pooled connections open to
+  the database.
+- On ClickHouse the drop is `SYNC`, so the name can be used again at once.
+
+### The doors' auth user
+
+It is made by [`initdb/door-auth.sh`](initdb/door-auth.sh). Postgres runs it at its first
+start, against an empty volume, and never again. It makes `pgbouncer_auth`, the user the doors
+look passwords up with, and its lookup function, `public.pgbouncer_get_auth`, in the
+`postgres` database.
 
 - The function is `SECURITY DEFINER`, so `pgbouncer_auth` needs no right to read the
   catalog itself. It hands a door the SCRAM verifier Postgres keeps, salt and iteration
@@ -152,29 +272,8 @@ runs it at its first start, against an empty volume, and never again. It makes
 - `pgbouncer_auth` is no superuser, holds no table rights, and inherits nothing. It reaches no
   database a product or a consumer owns, since `CONNECT` on each is revoked from everyone else.
 - Its password is `PGBOUNCER_AUTH_PASSWORD`, and Postgres reads it at that first start only.
-  Change it in `.env` later and both doors fail every login, until you set it on Postgres
-  too:
-
-  ```sh
-  docker exec -it postgres-18 psql -U postgres -c '\password pgbouncer_auth'
-  ```
-
-  The doors then recover within 15 seconds, or at once with
-  `docker compose restart pgbouncer-transaction pgbouncer-session`.
-
-**A product's database** and its user must be made before the product starts. **Nothing
-makes them yet.** The Go CLI that did is gone, and one-shot setup containers will do it
-next. What each needs:
-
-- On Postgres, for each of metabase, n8n, langfuse and twenty: a user and a database of that
-  name, which the user owns. The password is the product's `_DB_PASSWORD`. `CONNECT` on the
-  database is revoked from everyone else, `CREATE` on `public` is revoked, and the `vector`
-  extension is installed. The `n8n` user also carries `statement_timeout` of five minutes,
-  and *n8n* says why.
-- On ClickHouse, for langfuse: a user and a database named `langfuse`. The password is
-  `LANGFUSE_CLICKHOUSE_PASSWORD`, and the grants are under *ClickHouse*.
-
-Nothing is ever dropped. A password changes when `.env` changes.
+  To change it later, use `bin/new-password pgbouncer_auth`. Changing the line in `.env` alone
+  breaks both doors: they then fail every login.
 
 ## Object store
 
@@ -379,7 +478,8 @@ own defaults, in UTC, which langfuse requires, with the one setting the image do
 the archivist use and no product does; the image turns on access management for it, so it may
 create users.
 
-**Every product gets its own database and user on ClickHouse, exactly as on Postgres.** The
+**Every product or consumer gets its own database and user on ClickHouse, exactly as on
+Postgres**, made by `bin/add-database --clickhouse`, under *Provisioning*. The
 compose file holds nothing product-specific, and the image's `CLICKHOUSE_DB` is not used: it
 acts only on a first start with an empty volume, and would put a product's name in the shared
 file. The user is named as its database and holds, on that database alone, what langfuse
@@ -387,7 +487,8 @@ documents its user needs: `SELECT`, `INSERT`, `ALTER UPDATE`, `ALTER DELETE`, `C
 `DROP TABLE`, `DROP VIEW`, the column, index and view `ALTER`s, `SYSTEM SYNC REPLICA`,
 `SYSTEM MERGES` and `ALTER SETTINGS`; and `SELECT` on the columns of `system.parts`,
 `system.mutations` and `system.tables` it reads, on `system.processes` and on
-`system.query_log*`. It cannot read another database, make one, or make a user.
+`system.query_log*`. It cannot read another database, make one, or make a user. Every user
+on ClickHouse gets the same grants, whoever it is for.
 
 **ClickHouse is the heaviest container here.** `CLICKHOUSE_MEM_LIMIT` is where a cap goes:
 ClickHouse reads the cgroup limit and keeps its own ceiling at nine tenths of it, so a compose
@@ -425,6 +526,13 @@ the `n8n` user instead, where Postgres applies it as each connection starts and 
 touch it. For the same reason **the schema stays `public`**: any other name is set by a
 `SET search_path` the door discards just the same, and n8n would read and write `public`
 regardless. `public` is n8n's default, so nothing names it.
+
+**Put the time limit on the `n8n` user once**, after `bin/add-database n8n`. The archive of the
+globals keeps it, so a restore brings it back:
+
+```sh
+docker exec postgres-18 psql -U postgres -c "ALTER ROLE n8n SET statement_timeout = '5min'"
+```
 
 **`N8N_ENCRYPTION_KEY` is a one-way door.** Every saved credential is encrypted with it; it is
 not in the database and cannot be derived, so losing it loses every credential for good. Put it
@@ -912,7 +1020,8 @@ It also reads `POSTGRES_PASSWORD` and `CLICKHOUSE_PASSWORD`, under *Postgres* an
 A **consumer** is a project of your own that uses userland and is not part of it.
 
 - **Two networks**, `userland_postgres` and `userland_traefik`, which the consumer's compose
-  file declares as `external: true` and joins.
+  file declares as `external: true` and joins. A consumer with a database on ClickHouse joins
+  `userland_clickhouse` the same way.
 - **Two doors to Postgres**, `pgbouncer-transaction:5432` and `pgbouncer-session:5432`, and
   the DSN names one. `pgbouncer-transaction` is the default, for a consumer that keeps no state
   on a connection between transactions. `pgbouncer-session` is for one that does, whether a
@@ -937,52 +1046,12 @@ A **consumer** is a project of your own that uses userland and is not part of it
 
 ### A consumer's database
 
-Two helpers in `bin/` make and drop a consumer's database on Postgres. They run on the host, from
-the root of the repo, and need only docker and `postgres-18` up.
+A consumer's database is made, given a new password and dropped with the helpers under
+*Provisioning*, the same way as a product's. Paste the DSN into the consumer's own gitignored
+`.env`.
 
-```sh
-bin/add-database myapp
-bin/add-database --session myapp
-bin/add-database --api myapp
-bin/remove-database myapp
-```
-
-**`bin/add-database NAME`** makes the database `NAME` and a user of the same name that owns it.
-Then it prints the DSN, once.
-
-- `CONNECT` on the database is revoked from everyone else, and so is `CREATE` on `public`.
-- The `vector` extension is installed. It is not a trusted extension, so the consumer's user
-  could not install it later without the superuser. Doing it now costs nothing.
-- The DSN names the transaction door. With `--session`, it names the session door.
-- A name is `a-z`, `0-9` and `_`, starts with a letter, and is at most 63 characters.
-- A name that exists is refused, and nothing is changed. So is a name with a role left from an
-  earlier database: `bin/remove-database NAME` drops it.
-- Postgres keeps no copy of the password you can read back. Paste the DSN into the consumer's
-  own gitignored `.env`.
-
-**`--api`** adds the recipe for [PostgREST](https://postgrest.org), which the consumer runs in
-its own repo. A name is then at most 49 characters, so that `NAME_authenticator` fits in 63.
-
-- A schema `api`, owned by the consumer's user.
-- The authenticator, `NAME_authenticator`: the one role PostgREST logs in as. It holds no table
-  rights, and it is `NOINHERIT`, so it inherits none either. Without `NOINHERIT` it would carry
-  the anon role's rights on every connection, before PostgREST has taken a role.
-- The anon role, `NAME_anon`, which cannot log in and may use `api`. Grant it what it may read.
-- An event trigger that tells PostgREST to reload its schema cache after each migration. Only
-  the superuser may make an event trigger, which is why the helper makes it and not the
-  consumer.
-
-It prints a second DSN, `PGRST_DB_URI`, with `PGRST_DB_SCHEMAS` and `PGRST_DB_ANON_ROLE`.
-`PGRST_DB_URI` names the session door, whichever door the first DSN names. PostgREST hears
-the reload on a `LISTEN`, and the transaction door drops a `LISTEN` without a word.
-
-**`bin/remove-database NAME`** drops the database `NAME`, its user, and PostgREST's two roles,
-whichever of them exist. It names what it will drop, and drops it only if you type the name.
-The drop is `WITH (FORCE)`, because the doors keep pooled connections open to the database.
-Every row in it is lost.
-
-Neither ClickHouse nor a Redis is offered to a consumer: ClickHouse until a consumer needs one,
-and Redis never, since a product that needs Redis runs its own, and so does a consumer.
+No Redis is offered to a consumer. A product that needs Redis runs its own, and so does a
+consumer.
 
 ## Tests
 
@@ -1006,16 +1075,33 @@ compose makes of the files, `docker compose config`, and assert:
 
 - the doors look passwords up as `pgbouncer_auth`, which is no superuser and inherits nothing;
 - a database added is reached with the printed DSN, through the door it names, as its own user;
+- the printed `NAME_DB_PASSWORD` logs in as the user, for a product's database as for any other;
 - a database's user reaches no other database, and `vector` is installed;
 - `--api` installs the recipe, and PostgREST's DSN names the session door;
 - adding a name twice, or a name with roles left behind, is refused and changes nothing;
 - a bad name is refused: empty, with a hyphen or a capital, a leading digit, too long, a quote;
 - remove drops nothing unless the name is typed;
 - remove drops the database while both doors hold it, its user and both roles, and the name can be
-  added again.
+  added again;
+- a new password logs in through the door, and the old one no longer does, for a database's user
+  and for PostgREST's authenticator;
+- after `bin/new-password pgbouncer_auth` and an `up` with the printed line, both doors let users
+  in;
+- new-password refuses the superuser, a user without its database, an anon role and a bad name.
 
-Its container names are the real ones, so it cannot run on a host where userland is up. There
-its first `up` fails, and the running userland is not touched.
+`test/clickhouse.bats` starts the real `clickhouse` the same way, and asserts:
+
+- a database added logs in with the printed DSN, and its user creates, writes, updates and reads
+  a table, and reads the `system` tables langfuse reads;
+- that user reads no other database, and makes no database and no user;
+- a name twice, a user left behind, `--session`, `--api` and a bad name are refused, and change
+  nothing;
+- remove drops nothing unless the name is typed, then drops the database and its user, and the
+  name can be added again;
+- a new password logs in, and the old one no longer does; `default` is refused.
+
+Their container names are the real ones, so they cannot run on a host where userland is up.
+There their first `up` fails, and the running userland is not touched.
 
 They run from docker, as CI runs them. The repo is mounted at its own path, because a test that
 starts a container hands bind-mount paths to the host's docker:
@@ -1041,7 +1127,7 @@ Both run in CI on every pull request and on every push to `main`
 | `compose/` | One file per product, and `public.yml`, which turns traefik public. |
 | `test/` | The bats tests. |
 | `scripts/` | Shell that runs inside a container: the archivist's entrypoint, which is its schedule and its backup, and its password command. Nothing here runs on the host. |
-| `bin/` | Helpers that run on the host, in POSIX sh, needing only docker: `add-database` and `remove-database`. |
+| `bin/` | Helpers that run on the host, in POSIX sh, needing only docker: `add-database`, `new-password` and `remove-database`. |
 | `Dockerfile` | The archivist's image, the only one this repo builds: restic, a reader for the secret store, and the Postgres and HTTP clients its backup needs. |
 | `ssmget/` | That reader, a small Go module of its own. |
 | `initdb/` | First-start initialisation for Postgres. Runs once, against an empty volume, and never again. `door-auth.sh` makes the doors' auth user. |
@@ -1071,6 +1157,10 @@ A product is one file, `compose/<product>.yml`. In it, every container:
 Settings two containers of one product share go in a YAML anchor at the top of the file, as
 the doors, langfuse and twenty do. Every network and named volume a container uses is declared
 at the bottom of the file. Declaring one in two files is fine: compose merges them.
+
+A product with a database reads its password as `<PRODUCT>_DB_PASSWORD`, or
+`<PRODUCT>_CLICKHOUSE_PASSWORD` on ClickHouse, because those are the lines `bin/add-database`
+prints. Give it a row in the table under *Provisioning*.
 
 Then add the product to `products` in `test/compose.bats`, give it a test that it runs with
 what it needs, and give it a section here with a table of its variables. The tests fail until
