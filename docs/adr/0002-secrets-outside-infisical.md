@@ -4,12 +4,13 @@ Every `.env` on the host, userland's own and each consumer's, has its real copy 
 helper writes the file from it just before `docker compose up`, and nobody edits the file by
 hand. Two kinds of secret also live outside Infisical, and nothing else does:
 
-- **The two master keys**, the archivist's and Infisical's, live in the secret store and never
-  on the host. Each one unlocks everything else: the archive, and every secret in Infisical.
-  Each is read by an access key of its own.
+- **The two master keys**, the archivist's and Infisical's, live in the secret store. Each one
+  unlocks everything else: the archive, and every secret in Infisical. The archivist reads its
+  own at each run, with an access key of its own, so it never touches the host. Infisical's is
+  copied into `.env` by hand, because Infisical reads it only as a setting when it starts.
 - **The recovery keys** live with you, off the host. They are every secret the host needs
-  before Infisical is running: the access keys to the bucket and to each master key, the
-  passwords Postgres and Infisical start with, and the helper's login to Infisical. Infisical
+  before Infisical is running: the access keys to the bucket and to the archivist's master
+  key, the passwords Postgres and Infisical start with, and the helper's login to Infisical. Infisical
   keeps a copy too, so the file it writes is whole.
 
 The line sits there because of a loop. Infisical keeps its data in Postgres, and on a new host
@@ -37,8 +38,11 @@ refuses to write an empty file.
   the old ones in Infisical. That patches the loop instead of removing it.
 - **A Postgres of Infisical's own.** Rejected. It removes the loop too, but costs a second
   Postgres and a third dumper, and breaks one Postgres for the whole host.
-- **One access key for both master keys.** Rejected. The archivist could then read Infisical's
-  master key, and Infisical the archivist's.
+- **Infisical reading its master key from the secret store as it starts, through an image of
+  our own.** Rejected. It costs a second image to build, and the key would still end up on the
+  host, in Infisical's memory. Every `.env` is written onto the host in plain text anyway, so the
+  key in `.env` gives a thief of the host nothing more, and no `.env` is ever archived. So
+  Infisical has no access key of its own.
 - **The helper's login in the secret store.** Rejected. The secret store would then hold more
   than master keys.
 
@@ -46,7 +50,8 @@ refuses to write an empty file.
 
 - You keep the recovery keys off the host, wherever you keep secrets. userland never says
   where. When you change one, you change your copy too.
-- A new host needs only docker, this repo, and the recovery keys.
+- A new host needs only docker, this repo, the recovery keys, and Infisical's master key copied
+  from the secret store.
 - `bin/rebuild` puts back each datastore whole on a new host, globals included, from one run.
   It fills only an empty datastore, so it can never reset the users of a live one.
 - A line a helper makes, such as a database's password, belongs in Infisical, not on the

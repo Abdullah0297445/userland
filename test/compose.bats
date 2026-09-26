@@ -1,6 +1,6 @@
 bats_require_minimum_version 1.5.0
 
-products=(postgres pgadmin clickhouse metabase n8n langfuse twenty archivist)
+products=(postgres pgadmin clickhouse metabase n8n langfuse twenty archivist infisical)
 
 setup() {
 	env_file="$BATS_TEST_TMPDIR/env"
@@ -51,6 +51,10 @@ ARCHIVIST_KEY_NAME=/userland/archivist-key
 ARCHIVIST_KEY_REGION=region-1
 ARCHIVIST_KEY_ACCESS_KEY_ID=archivist-key-key
 ARCHIVIST_KEY_SECRET_ACCESS_KEY=archivist-key-secret
+INFISICAL_DB_PASSWORD=infisical-db-password
+INFISICAL_ENCRYPTION_KEY=0123456789abcdef0123456789abcdef
+INFISICAL_REDIS_PASSWORD=infisical-redis-password
+INFISICAL_AUTH_SECRET=infisical-auth-secret
 EOF
 }
 
@@ -149,6 +153,24 @@ on_network() {
 	run config_of twenty
 	[ "$status" -ne 0 ]
 	[[ "$output" == *'depends on undefined service "pgbouncer-session"'* ]]
+}
+
+@test "infisical runs with postgres, and is refused without it" {
+	run --separate-stderr config_of postgres infisical
+	[ "$status" -eq 0 ]
+	run config_of infisical
+	[ "$status" -ne 0 ]
+	[[ "$output" == *'service "infisical" depends on undefined service "pgbouncer-transaction"'* ]]
+}
+
+@test "infisical's address and cookies follow the visibility" {
+	run --separate-stderr config_of postgres infisical public
+	[ "$(jq -r '.services.infisical.environment.SITE_URL' <<<"$output")" = https://infisical.example.test ]
+	[ "$(jq -r '.services.infisical.environment.HTTPS_ENABLED' <<<"$output")" = true ]
+	sed -i 's/^DOMAIN=.*/DOMAIN=localhost/; s/^SCHEME=.*/SCHEME=http/; s/^SECURE_COOKIES=.*/SECURE_COOKIES=false/' "$env_file"
+	run --separate-stderr config_of postgres infisical
+	[ "$(jq -r '.services.infisical.environment.SITE_URL' <<<"$output")" = http://infisical.localhost ]
+	[ "$(jq -r '.services.infisical.environment.HTTPS_ENABLED' <<<"$output")" = false ]
 }
 
 @test "the archivist runs with nothing else, and reads no datastore's password" {
