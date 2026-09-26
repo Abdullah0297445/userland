@@ -1,0 +1,53 @@
+# Only the master keys and the recovery keys live outside Infisical
+
+Every `.env` on the host, userland's own and each consumer's, has its real copy in Infisical. A
+helper writes the file from it just before `docker compose up`, and nobody edits the file by
+hand. Two kinds of secret also live outside Infisical, and nothing else does:
+
+- **The two master keys**, the archivist's and Infisical's, live in the secret store and never
+  on the host. Each one unlocks everything else: the archive, and every secret in Infisical.
+  Each is read by an access key of its own.
+- **The recovery keys** live with you, off the host. They are every secret the host needs
+  before Infisical is running: the access keys to the bucket and to each master key, the
+  passwords Postgres and Infisical start with, and the helper's login to Infisical. Infisical
+  keeps a copy too, so the file it writes is whole.
+
+The line sits there because of a loop. Infisical keeps its data in Postgres, and on a new host
+that data comes back only from the archive. So nothing Infisical holds can help bring back the
+archivist, Postgres, or Infisical itself. Each of those takes its secrets from below: the
+recovery keys and the master keys. With those, a new host comes back in a straight line.
+Postgres starts with its old passwords, the globals bring every other user back with its own,
+Infisical starts on its old database, and every other line comes from it. Nothing is made up
+fresh, skipped or replaced.
+
+The file is written from a template of ours, in Infisical's own template language. It writes
+`KEY="value"` and escapes what compose would misread, so any value comes through unchanged. It
+refuses to write an empty file.
+
+## Considered options
+
+- **The file as the real copy, pushed into Infisical.** Rejected. A push never deletes, so a
+  line removed from the file stays in Infisical. A change nobody pushed is lost with the host.
+- **The Infisical Agent, writing every `.env` on a timer.** Rejected. A new `.env` does nothing
+  until `up`, so the file and the running containers would differ until someone happened to
+  run it. It also needs every consumer's folder mounted into its container.
+- **Fresh passwords for Postgres's own users on a new host.** Rejected. The dumper and the
+  doors need the superuser's and `pgbouncer_auth`'s passwords before Infisical is back. Making
+  them fresh means the globals must skip those two users, and the new values must then replace
+  the old ones in Infisical. That patches the loop instead of removing it.
+- **A Postgres of Infisical's own.** Rejected. It removes the loop too, but costs a second
+  Postgres and a third dumper, and breaks one Postgres for the whole host.
+- **One access key for both master keys.** Rejected. The archivist could then read Infisical's
+  master key, and Infisical the archivist's.
+- **The helper's login in the secret store.** Rejected. The secret store would then hold more
+  than master keys.
+
+## Consequences
+
+- You keep the recovery keys off the host, wherever you keep secrets. userland never says
+  where. When you change one, you change your copy too.
+- A new host needs only docker, this repo, and the recovery keys.
+- `bin/rebuild` puts back each datastore whole on a new host, globals included, from one run.
+  It fills only an empty datastore, so it can never reset the users of a live one.
+- A line a helper makes, such as a database's password, belongs in Infisical, not on the
+  screen.

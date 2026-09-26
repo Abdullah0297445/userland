@@ -88,10 +88,18 @@ A small POSIX sh script you run on the host, to do what compose can't. It needs 
 _Avoid_: tool, CLI, command, wrapper
 
 **Access key**:
-A key pair that reaches one bucket, or one secret store, and nothing else. Two buckets
-means two access keys, never shared, and the archivist's bucket and its master key are
-reached by two.
+A key pair that reaches one bucket, or one master key, and nothing else. Two buckets
+means two access keys, never shared. The archivist's bucket and its master key are
+reached by two, and Infisical's master key by a third.
 _Avoid_: identity, IAM user, credentials, service account, token
+
+**Recovery keys**:
+Every secret the host needs before Infisical is running: the access keys to the archivist's
+bucket and to each master key, the helper's login to Infisical, and the passwords Postgres and
+Infisical start with. A new host is handed them, because nothing on it can give them back. You
+keep them off the host, userland never says where, and Infisical keeps a copy. Every other
+secret comes only from Infisical.
+_Avoid_: seed, bootstrap secrets, break-glass keys
 
 ## Postgres and ClickHouse
 
@@ -174,7 +182,7 @@ _Avoid_: public role, guest
 
 **Archivist**:
 The product that takes every archive in the backup folder off this host, into a bucket of its
-own, where only the master key opens it. It knows no datastore and no database, and nothing
+own, where only its master key opens it. It knows no datastore and no database, and nothing
 it does depends on a dumper.
 _Avoid_: fort, backup service, backup container
 
@@ -191,19 +199,22 @@ yet safe.
 _Avoid_: staging area, spool, backups (for the concept)
 
 **Master key**:
-The one secret that encrypts every archive the archivist keeps. It lives in a secret store,
-never on the host, and the archivist reads it at each run. Lose it and every archive is waste.
+One of the two secrets that live in the secret store, never on the host. The archivist's
+encrypts every archive it keeps, and the archivist reads it at each run. Infisical's encrypts
+every secret Infisical keeps. Lose one and all it encrypts is waste.
 _Avoid_: passphrase, backup key, encryption key, secret
 
 **Repository**:
-What restic keeps inside the archivist's bucket: every archive, encrypted under the master key.
-It is not the bucket. It is made once, by hand, after the bucket, and never by the archivist on
-its own, so a repository that is missing is an alarm and not a fresh start.
+What restic keeps inside the archivist's bucket: every archive, encrypted under the
+archivist's master key. It is not the bucket. It is made once, by hand, after the bucket, and
+never by the archivist on its own, so a repository that is missing is an alarm and not a fresh
+start.
 _Avoid_: bucket (for this), repo, store, vault
 
 **Secret store**:
-A service you own, outside the host, that holds the master key. userland reads it and
-never writes it. An external dependency.
+A service you own, outside the host, that holds the two master keys and nothing else.
+userland reads it and never writes it. An external dependency. Infisical is not one: it runs
+on the host.
 _Avoid_: vault, parameter store (as the category), key store, KMS
 
 **Restore**:
@@ -212,3 +223,14 @@ name, which touches nothing live, or over the database it came from, which it re
 whole. It never makes a user, so the second needs the database's user to still exist.
 Deliberate, by hand, never on a schedule.
 _Avoid_: recover, pull, sync
+
+**Run**:
+One pass of a dumper over its datastore: the globals and every database, archived together
+and named by the time the pass started.
+_Avoid_: backup, snapshot, job, dump
+
+**Rebuild**:
+Putting a whole datastore back on a new host from one run: its globals first, then every
+database. It fills only an empty datastore, so it can never reset the users of a live one.
+Deliberate, by hand, and only on a new host.
+_Avoid_: restore (for this), recover, reseed, reset

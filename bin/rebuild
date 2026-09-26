@@ -1,0 +1,114 @@
+#!/bin/sh
+set -eu
+export LC_ALL=C
+
+usage="usage: bin/rebuild --postgres|--clickhouse [--run TIME]"
+
+die() {
+	echo "rebuild: $1" >&2
+	exit 1
+}
+
+datastore=
+run=
+named=
+while [ $# -gt 0 ]; do
+	case $1 in
+	--postgres | --clickhouse)
+		[ -z "$datastore" ] || die "name one datastore, --postgres or --clickhouse, not both. $usage"
+		datastore=${1#--}
+		;;
+	--run)
+		[ $# -ge 2 ] || die "--run needs the time of a run, such as 20260925T000000Z. $usage"
+		named=1
+		run=$2
+		shift
+		;;
+	*) die "$1 is not an option. $usage" ;;
+	esac
+	shift
+done
+[ -n "$datastore" ] || die "name the datastore, --postgres or --clickhouse. $usage"
+if [ -n "$named" ]; then
+	case $run in
+	[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]T[0-9][0-9][0-9][0-9][0-9][0-9]Z) ;;
+	*) die "'$run' is not the time of a run, such as 20260925T000000Z." ;;
+	esac
+fi
+
+dumper=$datastore-dumper
+docker exec archivist true >/dev/null 2>&1 ||
+	die "cannot reach the archivist. Put compose/archivist.yml in COMPOSE_FILE, and run docker compose up -d."
+docker exec "$dumper" true >/dev/null 2>&1 ||
+	die "cannot reach $dumper. Put compose/$datastore.yml in COMPOSE_FILE, and run docker compose up -d."
+
+if [ "$datastore" = postgres ]; then
+	held() {
+		docker exec postgres-18 psql -v ON_ERROR_STOP=1 -X -tA -U postgres -d postgres -c "SELECT datname FROM pg_database WHERE datname NOT IN ('postgres', 'template0', 'template1') UNION SELECT rolname FROM pg_roles WHERE rolname NOT IN ('postgres', 'pgbouncer_auth') AND rolname NOT LIKE 'pg\_%' ORDER BY 1"
+	}
+else
+	held() {
+		docker exec clickhouse clickhouse-client --query "SELECT name FROM (SELECT name FROM system.databases WHERE name NOT IN ('system', 'information_schema', 'INFORMATION_SCHEMA', 'default') UNION DISTINCT SELECT name FROM system.users WHERE name != 'default' UNION DISTINCT SELECT concat('default.', name) FROM system.tables WHERE database = 'default') ORDER BY name"
+	}
+fi
+holding=$(held) ||
+	die "cannot reach $datastore. Put compose/$datastore.yml in COMPOSE_FILE, and run docker compose up -d."
+[ -z "$holding" ] ||
+	die "$datastore is not empty: it holds $(echo "$holding" | tr '\n' ' ' | sed 's/ $//'). Nothing was changed. A rebuild fills an empty datastore on a new host; bin/restore brings one database back."
+
+runs=$(docker exec archivist archivist runs "$datastore") ||
+	die "could not read the runs of $datastore in the bucket. Nothing was changed."
+[ -n "$runs" ] || die "the bucket holds no run of $datastore. Nothing was changed."
+listing=$(echo "$runs" | awk -v path="/$datastore/databases/" '
+	{ count[$1] += 0 }
+	index($3, path) == 1 { count[$1]++ }
+	END { for (run in count) printf "  %s  %d databases\n", run, count[run] }
+' | sort -r)
+[ -n "$named" ] || run=$(echo "$runs" | tail -n 1 | cut -d ' ' -f 1)
+archives=$(echo "$runs" | awk -v run="$run" '$1 == run { print $2, $3 }')
+[ -n "$archives" ] ||
+	die "the bucket holds no run $run of $datastore. Nothing was changed. The runs there are:
+$listing"
+globals=$(echo "$archives" | awk -v path="/$datastore/globals" 'index($2, path) == 1 { print $1, $2 }')
+databases=$(echo "$archives" | awk -v path="/$datastore/databases/" 'index($2, path) == 1 { print $1, $2 }')
+[ -n "$globals" ] ||
+	die "the run $run holds no globals, so its users cannot come back. Nothing was changed. Name another run with --run. The runs there are:
+$listing"
+[ -n "$named" ] || [ -n "$databases" ] ||
+	die "the newest run, $run, holds no database. It may be a run of an empty $datastore, on this host. Nothing was changed. Name the run to rebuild from with --run. The runs there are:
+$listing"
+names=$(echo "$databases" | sed 's|^.*/||; s|\.[a-z]*$||' | tr '\n' ' ' | sed 's/ $//')
+
+start_again="Start again on an empty $datastore: run docker compose down, docker volume rm userland_${datastore}_data and docker compose up -d, then rebuild again."
+
+cleanup() {
+	docker exec "$dumper" rm -rf "/backups/restore/$datastore"
+}
+trap cleanup EXIT
+
+said=${names:+the databases $names}
+echo "Rebuilding $datastore from the run $run: the globals, and ${said:-no database}."
+docker exec archivist archivist fetch "${globals#* }" "${globals%% *}" >/dev/null ||
+	die "the globals of the run $run did not come out of the bucket. Nothing was changed."
+docker exec "$dumper" dumper restore-globals ||
+	die "the globals of the run $run did not come back. $start_again"
+if [ "$datastore" = postgres ]; then
+	logs_in() {
+		docker exec postgres-18 sh -c "PGPASSWORD=\"\$$2\" psql -h postgres-18 -U $1 -d postgres -X -tA -c 'SELECT 1'" >/dev/null 2>&1
+	}
+	logs_in postgres POSTGRES_PASSWORD ||
+		die "the globals are back, but the superuser's password in the archive is not POSTGRES_PASSWORD in .env. No database was restored. .env must hold the recovery key: put it there. $start_again"
+	logs_in pgbouncer_auth PGBOUNCER_AUTH_PASSWORD ||
+		die "the globals are back, but pgbouncer_auth's password in the archive is not PGBOUNCER_AUTH_PASSWORD in .env. No database was restored. .env must hold the recovery key: put it there. $start_again"
+fi
+echo "$databases" | while read -r snapshot path; do
+	[ -n "$path" ] || continue
+	name=${path##*/}
+	name=${name%.*}
+	docker exec archivist archivist fetch "$path" "$snapshot" >/dev/null ||
+		die "the archive of $name did not come out of the bucket, so $datastore is half rebuilt. $start_again"
+	docker exec "$dumper" dumper restore "$name" ||
+		die "the archive of $name did not come back, so $datastore is half rebuilt. $start_again"
+	echo "The database $name is back."
+done
+echo "$datastore is rebuilt from the run $run."

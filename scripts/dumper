@@ -59,12 +59,19 @@ postgres)
 		echo "/backups/restore/postgres/databases/$1.dump"
 	}
 
+	restored_globals=/backups/restore/postgres/globals.sql
+
+	restore_globals() {
+		sed '/^CREATE ROLE postgres;$/d; /^CREATE ROLE pgbouncer_auth;$/d' "$restored_globals" |
+			psql -X -q -v ON_ERROR_STOP=1 >/dev/null
+	}
+
 	restore_database() {
 		if [ -n "$2" ]; then
 			psql -tAX -v ON_ERROR_STOP=1 -c "CREATE DATABASE \"$2\"" >/dev/null &&
 				pg_restore --no-owner --no-acl --exit-on-error --dbname="$2" "$(restored_file "$1")"
 		else
-			psql -tAX -v ON_ERROR_STOP=1 -c "DROP DATABASE IF EXISTS \"$1\" WITH (FORCE)" >/dev/null &&
+			psql -tAX -v ON_ERROR_STOP=1 -c "SET client_min_messages = warning" -c "DROP DATABASE IF EXISTS \"$1\" WITH (FORCE)" >/dev/null &&
 				pg_restore --create --exit-on-error --dbname=postgres "$(restored_file "$1")"
 		fi
 	}
@@ -98,6 +105,12 @@ clickhouse)
 
 	restored_file() {
 		echo "/backups/restore/clickhouse/databases/$1.tar"
+	}
+
+	restored_globals=/backups/restore/clickhouse/globals.tar
+
+	restore_globals() {
+		query "RESTORE TABLE system.users FROM File('restore/clickhouse/globals.tar')" >/dev/null
 	}
 
 	restore_database() {
@@ -239,6 +252,19 @@ restore() {
 	fi
 }
 
+restore_the_globals() {
+	if [ ! -f "$restored_globals" ]; then
+		complain "there are no globals at $restored_globals. bin/rebuild puts them there."
+		exit 1
+	fi
+	if restore_globals; then
+		rm -f "$restored_globals"
+	else
+		complain "the globals did not come back."
+		exit 1
+	fi
+}
+
 health() {
 	[ -f "$record" ] || exit 0
 	read -r last status <"$record"
@@ -259,9 +285,10 @@ restore)
 	shift
 	restore "$@"
 	;;
+restore-globals) restore_the_globals ;;
 health) health ;;
 *)
-	complain "usage: dumper [now | restore NAME [OTHER] | health]"
+	complain "usage: dumper [now | restore NAME [OTHER] | restore-globals | health]"
 	exit 2
 	;;
 esac
