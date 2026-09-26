@@ -9,9 +9,9 @@ and it is deliberately not one of them.
 
 > **This repo is being built in the open.** userland now runs on docker compose alone. Every
 > product has its compose file, every database is made by a helper, and every database is
-> archived and taken off the host. Every `.env` living in Infisical comes next, and *Bringing a
-> host back* already says how a new host will come back with it. The design is published as
-> issues on this repo as it is settled.
+> archived and taken off the host. Infisical runs as a product. Writing every `.env` from it
+> comes next, and *Bringing a host back* already says how a new host will come back with it.
+> The design is published as issues on this repo as it is settled.
 
 `userland` is the part of a running system that is not the kernel: everything the machine
 runs *for you*. This repo is that layer, for one host.
@@ -29,6 +29,7 @@ runs *for you*. This repo is that layer, for one host.
 | **langfuse** | `compose/langfuse.yml` | langfuse-web, langfuse-worker and langfuse-redis. |
 | **twenty** | `compose/twenty.yml` | twenty-server, twenty-worker and twenty-redis. |
 | **archivist** | `compose/archivist.yml` | archivist. It takes every archive the dumpers write off the host, into a bucket of its own, as [restic](https://restic.net) snapshots under a master key that never touches the host. |
+| **infisical** | `compose/infisical.yml` | infisical and infisical-redis. It keeps secrets, and every `.env` is to live in it. |
 
 neo4j is planned.
 
@@ -39,12 +40,12 @@ pointed at it.
 
 Two things are pointed at rather than run. One is an S3-compatible object store you bring:
 the archivist, Langfuse and Twenty each need a bucket of it. The other is a secret store you
-own, which holds the archivist's master key. userland makes neither: you make them, and
-*Object store* and *Secret store* say how. Each bucket is reached by an access key of its own.
-The archivist's may delete under `locks/` and nowhere else, so a compromised host cannot erase
-its own archives. Langfuse's may delete, because its Data Retention feature does, and so may
-Twenty's, because it moves a file by copying it and deleting the original. Nothing may ever
-expire in the archivist's, and *Object store* says why.
+own, which holds two master keys: the archivist's and Infisical's. userland makes neither: you
+make them, and *Object store* and *Secret store* say how. Each bucket is reached by an access
+key of its own. The archivist's may delete under `locks/` and nowhere else, so a compromised
+host cannot erase its own archives. Langfuse's may delete, because its Data Retention feature
+does, and so may Twenty's, because it moves a file by copying it and deleting the original.
+Nothing may ever expire in the archivist's, and *Object store* says why.
 
 ## The shape
 
@@ -80,7 +81,7 @@ Both go through traefik. Public is local plus two changes:
 |---|---|---|---|
 | `DOMAIN` | `localhost` | your domain | Every hostname is a name under it, such as `n8n.${DOMAIN}`. |
 | `SCHEME` | `http` | `https` | The scheme in every link a product writes. |
-| `SECURE_COOKIES` | `false` | `true` | Whether n8n and pgadmin mark their cookies secure. A secure cookie over plain HTTP is a login that never completes. |
+| `SECURE_COOKIES` | `false` | `true` | Whether n8n, pgadmin and Infisical mark their cookies secure. A secure cookie over plain HTTP is a login that never completes. |
 
 All three are required. A public host that forgot one would serve `http` links, so compose
 refuses instead.
@@ -144,8 +145,8 @@ MB_ENCRYPTION_SECRET_KEY=...
 **Values in `.env`.** Each fits on one line, without `$`, `#`, quotes or a backtick, and
 without a space at either end, because compose reads `.env` unquoted. A password that
 travels inside a URL may hold only letters, digits, `-`, `.`, `_` and `~`. That is every
-Postgres and ClickHouse password, and twenty's Redis password. This makes a secret that fits
-everywhere, including langfuse's 64-character hex key:
+Postgres and ClickHouse password, and twenty's and Infisical's Redis passwords. This makes a
+secret that fits everywhere, including langfuse's 64-character hex key:
 
 ```sh
 docker run --rm alpine sh -c "od -An -tx1 -N32 /dev/urandom | tr -d ' \n'"
@@ -184,6 +185,7 @@ goes into `COMPOSE_FILE` after its database is made.
 | n8n | `bin/add-database n8n`, then the one line under *n8n* | `N8N_DB_PASSWORD` |
 | langfuse | `bin/add-database langfuse` and `bin/add-database --clickhouse langfuse` | `LANGFUSE_DB_PASSWORD` and `LANGFUSE_CLICKHOUSE_PASSWORD` |
 | twenty | `bin/add-database twenty` | `TWENTY_DB_PASSWORD` |
+| infisical | `bin/add-database infisical` | `INFISICAL_DB_PASSWORD` |
 
 ### Making a database
 
@@ -374,10 +376,17 @@ Make these, in this order:
 
 The key may only read that one parameter, and nothing it holds writes.
 
-The secret store holds master keys and nothing else. Infisical's master key will be the second,
-read by an access key of its own, so neither the archivist nor Infisical can read the other's.
-The keys that reach the secret store are recovery keys, and you keep them yourself, under
-*Bringing a host back*.
+**Infisical's master key** is the second parameter there: a `SecureString` of exactly 32
+characters, such as `openssl rand -hex 16` makes. userland never reads it, so it needs no user
+and no access key. You copy it into `.env` by hand, as `INFISICAL_ENCRYPTION_KEY`, because
+Infisical reads it only as a setting when it starts, and compose hands a container a setting only
+from `.env`. So, unlike the archivist's, it sits on the host while Infisical runs. It gives away
+nothing more there: every `.env` is on the host in plain text anyway, and no `.env` is ever
+archived. **Never overwrite it either**: Infisical will not start with another key, and every
+archive of its database needs the key it was taken with.
+
+The secret store holds these two master keys and nothing else. The access key that reads the
+archivist's is a recovery key, and you keep it yourself, under *Bringing a host back*.
 
 ## traefik
 
@@ -1070,14 +1079,71 @@ back. `bin/rebuild` does, under *Bringing a host back*.
 | `ARCHIVIST_KEY_SECRET_ACCESS_KEY` | required | Its secret. |
 | `ARCHIVIST_MEM_LIMIT` | default no limit | Memory limit of `archivist`. |
 
+## Infisical
+
+Infisical keeps secrets. Every `.env` is to live in it, userland's own and each consumer's, and a
+helper will write each file from it just before `up`. That helper is not here yet, so for now you
+use Infisical in the browser. [ADR 0002](docs/adr/0002-secrets-outside-infisical.md) says which
+secrets stay outside it, and why.
+
+Two containers, always on together. `infisical` is the server and its web UI in one, at
+`infisical.${DOMAIN}`. `infisical-redis` is its own Redis, which nothing else is pointed at. It
+runs `noeviction` with append-only persistence, as langfuse's and twenty's do.
+
+**Its database holds everything that lasts.** Users, projects, machine identities, and every
+secret, encrypted. It is the `infisical` database on Postgres, reached through the transaction
+door. So `postgres-dumper` archives it and the archivist takes it off the host, like every other
+database, and nothing else of Infisical needs keeping. Redis holds only queues and caches, which
+Infisical rebuilds. The container needs no volume.
+
+**Its master key** encrypts every secret it keeps. It lives in the secret store, and you copy it
+into `.env` by hand, as `INFISICAL_ENCRYPTION_KEY`. *Secret store* says why. Lose it, and every
+secret in Infisical is lost. Started with another key, Infisical says so in
+`docker logs infisical` and exits.
+
+**Before it first starts**, make its database and its lines:
+
+1. `bin/add-database infisical`, and paste the `INFISICAL_DB_PASSWORD` line it prints.
+2. Copy its master key from the secret store into `INFISICAL_ENCRYPTION_KEY`.
+3. Make `INFISICAL_REDIS_PASSWORD` and `INFISICAL_AUTH_SECRET` with the command under
+   *Values in `.env`*.
+4. Add `compose/infisical.yml` to `COMPOSE_FILE`, and run `docker compose up -d`.
+
+Its database password, its Redis password and its auth secret are recovery keys. Keep a copy
+off the host, under *Bringing a host back*.
+
+**Make the first admin at once.** Straight after that first `up`, open `infisical.${DOMAIN}` and
+sign up. The first account becomes the admin of the whole of Infisical, and Infisical then closes
+sign-up by itself. **Until you do, whoever reaches it first becomes the admin.** In public, a
+new hostname is listed in public certificate logs within minutes of its certificate. On a new
+host there is no admin to make: the database comes back with yours in it.
+
+**Upgrading.** The tag is exact, never `latest`, and it only ever goes up. A newer image
+migrates the database as it starts. An older image may refuse a database a newer one has
+migrated, and an archive restores only into the tag it was taken with, or a newer one. Take a
+fresh archive with `docker exec postgres-dumper dumper now`, then move the tag. The image is
+large: about 3 GB.
+
+Everything else, telemetry and email included, runs at Infisical's defaults. With no email set,
+there are no invites and no password reset by email.
+
+| Variable | Needed | Meaning |
+|---|---|---|
+| `INFISICAL_ENCRYPTION_KEY` | required | Infisical's master key: exactly 32 characters. Its real copy is in the secret store. Never change it. |
+| `INFISICAL_DB_PASSWORD` | required | Password of the `infisical` user on Postgres, which owns the `infisical` database. A recovery key. |
+| `INFISICAL_REDIS_PASSWORD` | required | Password of Infisical's own Redis. URL-safe characters only. A recovery key. |
+| `INFISICAL_AUTH_SECRET` | required | Signs Infisical's logins and tokens. A new one logs everyone out, and loses nothing else. A recovery key. |
+| `INFISICAL_MEM_LIMIT` | default no limit | Memory limit of `infisical`. |
+| `INFISICAL_REDIS_MEM_LIMIT` | default no limit | Memory limit of `infisical-redis`. |
+
 ## Bringing a host back
 
 When a host is lost, a new one comes back from the bucket and your recovery keys alone. Every
 database comes back from the archive, with every user and its old password. Every `.env` comes
 back from Infisical, whose own database is one of those databases.
 
-> Infisical is not part of userland yet. Steps 4, 5 and 8 below arrive with it, and one helper
-> will then do steps 2 to 8 in one command. Until Infisical lands, keep a copy of `.env` off
+> Writing `.env` from Infisical is not part of userland yet. Steps 5 and 8 below arrive with it,
+> and one helper will then do steps 2 to 8 in one command. Until then, keep a copy of `.env` off
 > the host as well.
 
 **The recovery keys.** Infisical keeps every secret but two kinds. The master keys live in the
@@ -1091,9 +1157,11 @@ writes is whole. When you change one, change your copy as well.
 | The archivist's bucket, and the access key that reaches it | `ARCHIVIST_S3_BUCKET`, `ARCHIVIST_S3_REGION`, `ARCHIVIST_S3_ENDPOINT`, `ARCHIVIST_S3_ACCESS_KEY_ID`, `ARCHIVIST_S3_SECRET_ACCESS_KEY` |
 | The archivist's master key, and the access key that reads it | `ARCHIVIST_KEY_PROVIDER`, `ARCHIVIST_KEY_NAME`, `ARCHIVIST_KEY_REGION`, `ARCHIVIST_KEY_ACCESS_KEY_ID`, `ARCHIVIST_KEY_SECRET_ACCESS_KEY` |
 | The passwords of the Postgres superuser and of `pgbouncer_auth` | `POSTGRES_PASSWORD`, `PGBOUNCER_AUTH_PASSWORD` |
-| Infisical's master key and the access key that reads it, its database password, its Redis password, its auth secret, and the helper's login to Infisical | Their lines arrive with Infisical. |
+| Infisical's database password, its Redis password and its auth secret | `INFISICAL_DB_PASSWORD`, `INFISICAL_REDIS_PASSWORD`, `INFISICAL_AUTH_SECRET` |
+| The helper's login to Infisical | Its lines arrive with the helper. |
 
-Every other password comes back with the globals, and every other line comes from Infisical.
+Infisical's master key is not among them: it comes from the secret store, at step 4. Every other
+password comes back with the globals, and every other line comes from Infisical.
 
 **The order.**
 
@@ -1108,8 +1176,9 @@ Every other password comes back with the globals, and every other line comes fro
 3. Straight away, `bin/rebuild --postgres`. Every user and every database comes back,
    Infisical's included.
 4. Add `compose/infisical.yml` to `COMPOSE_FILE`, with `DOMAIN`, `SCHEME` and
-   `SECURE_COOKIES`, and run `docker compose up -d`. Infisical starts on its old database, and
-   reads its master key from the secret store.
+   `SECURE_COOKIES`. Copy Infisical's master key from the secret store into `.env`, as
+   `INFISICAL_ENCRYPTION_KEY`, and run `docker compose up -d`. Infisical starts on its old
+   database, with its admin already in it.
 5. Write `.env` from Infisical. It now holds every line, and the whole `COMPOSE_FILE`.
 6. If ClickHouse is in `COMPOSE_FILE`, run `docker compose up -d clickhouse clickhouse-dumper`,
    then `bin/rebuild --clickhouse`. Naming the two containers starts them alone, so no product
@@ -1201,6 +1270,7 @@ compose makes of the files, `docker compose config`, and assert:
 - every product runs together, in local and in public;
 - `DOMAIN`, `SCHEME` and `SECURE_COOKIES` are required, and so are `CERT_EMAIL` and
   `DNS_PROVIDER` in public;
+- Infisical's address and its secure cookies follow the visibility;
 - no port is published but traefik's 80, and its 443 in public;
 - every container another waits on has a healthcheck;
 - consumers join `userland_postgres` and `userland_traefik`, and `postgres-18` is on neither;
@@ -1280,6 +1350,14 @@ datastore's volume and starting it again, empty, while the bucket stays. It asse
 - a password in `.env` that is not the archive's stops the rebuild right after the globals, and
   says so.
 
+`test/infisical.bats` starts Postgres, the transaction door, traefik and Infisical, on a
+database made by `bin/add-database infisical`, and asserts:
+
+- Infisical comes up healthy, and traefik answers for `infisical.localhost`;
+- `bootstrap`, from Infisical's CLI image, makes the first admin without a browser, and sign-up
+  is then closed;
+- a machine identity logs in with its client ID and secret, and reads a secret the admin wrote.
+
 Their container names are the real ones, so they cannot run on a host where userland is up.
 There their first `up` fails, and the running userland is not touched.
 
@@ -1358,9 +1436,9 @@ the table names every one.
   or account identifier into a tracked file.
 - **That one `.env` holds every secret of every product you switched on.** Confirm
   `.gitignore` excludes it before your first commit. Its real copy is to live in Infisical,
-  and until Infisical lands, keep a copy somewhere off this machine. Some of what it holds, the
-  encryption keys a product writes data with, cannot be regenerated, and losing them loses the
-  data.
+  and until a helper writes it from there, keep a copy somewhere off this machine. Some of what
+  it holds, the encryption keys a product writes data with, cannot be regenerated, and losing
+  them loses the data.
 - **Postgres and the doors run at their images' defaults.** No pool size, connection
   ceiling or memory setting is written anywhere in this repo, beyond the two doors'
   client ceiling and the session door's pool, which is Postgres's own connection limit so

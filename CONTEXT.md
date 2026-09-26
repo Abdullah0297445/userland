@@ -87,16 +87,22 @@ _Avoid_: seeding, bootstrapping, init, setup, migration, converging
 A small POSIX sh script you run on the host, to do what compose can't. It needs only docker.
 _Avoid_: tool, CLI, command, wrapper
 
+**Infisical**:
+The product that keeps the real copy of every `.env`: userland's own, and each consumer's. It
+runs on the host, keeps what it holds in a database of its own on Postgres, and encrypts it under
+its master key. It is not the secret store.
+_Avoid_: secret store, vault, secret manager
+
 **Access key**:
 A key pair that reaches one bucket, or one master key, and nothing else. Two buckets
 means two access keys, never shared. The archivist's bucket and its master key are
-reached by two, and Infisical's master key by a third.
+reached by two.
 _Avoid_: identity, IAM user, credentials, service account, token
 
 **Recovery keys**:
-Every secret the host needs before Infisical is running: the access keys to the archivist's
-bucket and to each master key, the helper's login to Infisical, and the passwords Postgres and
-Infisical start with. A new host is handed them, because nothing on it can give them back. You
+Every secret the host needs before Infisical is running, other than the master keys: the
+access keys to the archivist's bucket and to its master key, the helper's login to Infisical,
+and the passwords Postgres and Infisical start with. A new host is handed them, because nothing on it can give them back. You
 keep them off the host, userland never says where, and Infisical keeps a copy. Every other
 secret comes only from Infisical.
 _Avoid_: seed, bootstrap secrets, break-glass keys
@@ -199,9 +205,10 @@ yet safe.
 _Avoid_: staging area, spool, backups (for the concept)
 
 **Master key**:
-One of the two secrets that live in the secret store, never on the host. The archivist's
-encrypts every archive it keeps, and the archivist reads it at each run. Infisical's encrypts
-every secret Infisical keeps. Lose one and all it encrypts is waste.
+One of the two secrets that live in the secret store. The archivist's encrypts every archive
+it keeps; the archivist reads it at each run, so it never touches the host. Infisical's encrypts
+every secret Infisical keeps; you copy it onto the host by hand, because Infisical reads it only
+as it starts. Lose one and all it encrypts is waste.
 _Avoid_: passphrase, backup key, encryption key, secret
 
 **Repository**:
@@ -213,7 +220,7 @@ _Avoid_: bucket (for this), repo, store, vault
 
 **Secret store**:
 A service you own, outside the host, that holds the two master keys and nothing else.
-userland reads it and never writes it. An external dependency. Infisical is not one: it runs
+userland reads the archivist's and never writes it; Infisical's you copy by hand. An external dependency. Infisical is not one: it runs
 on the host.
 _Avoid_: vault, parameter store (as the category), key store, KMS
 
